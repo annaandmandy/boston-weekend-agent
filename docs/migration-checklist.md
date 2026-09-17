@@ -31,12 +31,12 @@ functions without changing the historical S3 data.
 - [ ] Push a versioned image to a new ECR repository.
 - [ ] Create `collect_events_v2` as a container-image Lambda.
 - [ ] Configure 512 MB memory and a 300-second timeout.
-- [ ] Set `EVENTS_SECRET_ID`, `REPORT_BUCKET`, and a Boston Calendar limit of 5.
+- [ ] Set `EVENTS_SECRET_ID`, `REPORT_BUCKET`, and `MAX_EVENTS_PER_SOURCE`.
 - [ ] Attach CloudWatch Logs, scoped Secrets Manager, and scoped S3 permissions.
 - [ ] Invoke the Lambda directly with `{}`.
 - [ ] Confirm `events/latest.json` receives a new timestamp.
 - [ ] Confirm provider failures are reported without exposing credential values.
-- [ ] Increase the Boston Calendar limit only after observing runtime and status codes.
+- [ ] Confirm the City of Boston RSS source returns current events.
 
 ## Report rollout
 

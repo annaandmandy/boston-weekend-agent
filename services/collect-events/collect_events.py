@@ -7,10 +7,10 @@ import logging
 import os
 import re
 import time
+import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Any, Callable
-from urllib.parse import urljoin
 from zoneinfo import ZoneInfo
 
 import boto3
@@ -25,9 +25,6 @@ AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 BUCKET_NAME = os.environ.get("REPORT_BUCKET", "boston-weekend-agent-reports")
 DAYS_AHEAD = int(os.environ.get("DAYS_AHEAD", "3"))
 MAX_EVENTS_PER_SOURCE = int(os.environ.get("MAX_EVENTS_PER_SOURCE", "10"))
-MAX_BOSTON_CALENDAR_EVENTS = int(
-    os.environ.get("MAX_BOSTON_CALENDAR_EVENTS", "5")
-)
 REQUEST_TIMEOUT_SECONDS = int(os.environ.get("REQUEST_TIMEOUT_SECONDS", "15"))
 MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "3"))
 
@@ -59,12 +56,11 @@ def get_api_credentials() -> dict[str, str]:
         # Local development only; production should always configure EVENTS_SECRET_ID.
         values = {
             "TICKETMASTER_API_KEY": os.environ.get("TICKETMASTER_API_KEY", ""),
-            "EVENTBRITE_TOKEN": os.environ.get("EVENTBRITE_TOKEN", ""),
         }
 
     missing = [
         key
-        for key in ("TICKETMASTER_API_KEY", "EVENTBRITE_TOKEN")
+        for key in ("TICKETMASTER_API_KEY",)
         if not values.get(key)
     ]
     if missing:
@@ -186,147 +182,80 @@ def fetch_ticketmaster_events() -> list[dict[str, Any]]:
     return events
 
 
-def fetch_eventbrite_events() -> list[dict[str, Any]]:
-    LOGGER.info("Fetching Eventbrite events")
-    token = get_api_credentials()["EVENTBRITE_TOKEN"]
-    now_utc = datetime.now(timezone.utc)
-    response = request_with_retry(
-        lambda: requests.get(
-            "https://www.eventbriteapi.com/v3/events/search/",
-            headers={"Authorization": f"Bearer {token}"},
-            params={
-                "location.address": "Boston, MA",
-                "location.within": "15mi",
-                "start_date.range_start": now_utc.isoformat(),
-                "start_date.range_end": (
-                    now_utc + timedelta(days=DAYS_AHEAD)
-                ).isoformat(),
-                "expand": "venue,ticket_availability",
-                "page_size": MAX_EVENTS_PER_SOURCE,
-            },
-            timeout=REQUEST_TIMEOUT_SECONDS,
-        ),
-        source="Eventbrite",
-    )
-
+def parse_boston_gov_rss(
+    xml_text: str, *, today: date | None = None
+) -> list[dict[str, Any]]:
+    """Normalize City of Boston's official public events RSS feed."""
+    root = ET.fromstring(xml_text)
     events = []
-    for raw in response.json().get("events", []):
-        start = raw.get("start", {})
-        venue = raw.get("venue") or {}
-        local_time = start.get("local") or ""
+    for item in root.findall("./channel/item"):
+        title = clean_text(item.findtext("title"))
+        link = clean_text(item.findtext("link"))
+        description_html = item.findtext("description") or ""
+        soup = BeautifulSoup(description_html, "html.parser")
+        start = soup.select_one("time[datetime]")
+        start_value = start.get("datetime", "") if start else ""
+        event_date = start_value.split("T", 1)[0] if "T" in start_value else None
+        start_text = clean_text(start.get_text()) if start else None
+        event_time = start_text.rsplit(" - ", 1)[-1] if start_text else None
+        if not is_in_collection_window(event_date, today=today):
+            continue
+
+        address_node = soup.select_one("p.address")
+        address = (
+            clean_text(address_node.get_text(" ", strip=True))
+            if address_node
+            else None
+        )
+        location_node = soup.select_one(".address-line1")
+        location = (
+            clean_text(location_node.get_text())
+            if location_node
+            else "Boston, MA"
+        )
+        paragraphs = []
+        for paragraph in soup.find_all("p"):
+            text = clean_text(paragraph.get_text(" ", strip=True))
+            if not text or "address" in paragraph.get("class", []):
+                continue
+            if text.startswith(("Event Date:", "Address:", "Contact Department:", "Publish Date:")):
+                continue
+            paragraphs.append(text)
+
         events.append(
             {
-                "name": clean_text((raw.get("name") or {}).get("text")),
-                "date": local_time.split("T", 1)[0] if "T" in local_time else None,
-                "time": local_time.split("T", 1)[1][:5] if "T" in local_time else None,
-                "location": venue.get("name") or "Boston, MA",
-                "address": (venue.get("address") or {}).get(
-                    "localized_address_display"
-                ),
-                "category": "Event",
-                "price": "Free" if raw.get("is_free") else "Paid",
-                "description": clean_text(raw.get("summary")),
-                "image_url": (raw.get("logo") or {}).get("url"),
-                "source": "Eventbrite",
-                "link": raw.get("url"),
+                "name": title,
+                "date": event_date,
+                "time": event_time,
+                "location": location,
+                "address": address,
+                "category": "Community",
+                "price": "Free"
+                if re.search(r"\bfree\b", description_html, re.IGNORECASE)
+                else None,
+                "description": clean_text(" ".join(paragraphs)),
+                "image_url": None,
+                "source": "Boston.gov",
+                "link": link,
             }
         )
-    LOGGER.info("Eventbrite returned %s events", len(events))
+        if len(events) >= MAX_EVENTS_PER_SOURCE:
+            break
     return events
 
 
-def parse_boston_calendar_detail(html: str, url: str) -> dict[str, Any]:
-    soup = BeautifulSoup(html, "html.parser")
-    container = soup.select_one("#content-event-left #event_info") or soup.select_one(
-        "#content-event-left"
-    )
-    if container is None:
-        raise ValueError(f"Boston Calendar event container missing: {url}")
-
-    title = container.select_one("[itemprop='name']") or soup.select_one(
-        "h1[itemprop='name']"
-    )
-    start = container.select_one("span[itemprop='startDate']")
-    location = container.select_one("[itemprop='location']")
-    location_name = location.select_one("[itemprop='name']") if location else None
-    address = location.select_one("[itemprop='address']") if location else None
-
-    admission = None
-    host = None
-    for label in container.find_all(["b", "strong"]):
-        label_text = clean_text(label.get_text()) or ""
-        parent_text = clean_text(label.parent.get_text(" ", strip=True)) or ""
-        value = parent_text.replace(label_text, "", 1).strip(" :–-") or None
-        lowered = label_text.lower().rstrip(":")
-        if any(term in lowered for term in ("admission", "price", "ticket", "cost")):
-            admission = value
-        if any(term in lowered for term in ("host", "organizer", "presented")):
-            host = value
-
-    if admission:
-        price_match = re.search(r"\$\s*\d+(?:[.,]\d{1,2})?", admission)
-        if price_match:
-            admission = price_match.group(0)
-        elif re.search(r"\bfree\b", admission, re.IGNORECASE):
-            admission = "Free"
-
-    return {
-        "name": clean_text(title.get_text()) if title else None,
-        "date": start.get("content", "").split("T", 1)[0] if start else None,
-        "time": clean_text(
-            (container.select_one("#starting_time") or {}).get_text()
-        )
-        if container.select_one("#starting_time")
-        else None,
-        "location": clean_text(location_name.get_text())
-        if location_name
-        else clean_text(address.get_text(" ", strip=True))
-        if address
-        else "Boston, MA",
-        "address": clean_text(address.get_text(" ", strip=True)) if address else None,
-        "category": "Event",
-        "price": admission,
-        "source": "TheBostonCalendar",
-        "link": url,
-        "host": host,
-    }
-
-
-def fetch_boston_calendar_events() -> list[dict[str, Any]]:
-    LOGGER.info("Fetching The Boston Calendar events")
-    base_url = "https://www.thebostoncalendar.com/events"
-    listing = request_with_retry(
+def fetch_boston_gov_events() -> list[dict[str, Any]]:
+    LOGGER.info("Fetching City of Boston events")
+    response = request_with_retry(
         lambda: requests.get(
-            base_url, headers=HEADERS, timeout=REQUEST_TIMEOUT_SECONDS
+            "https://www.boston.gov/rss/events",
+            headers=HEADERS,
+            timeout=REQUEST_TIMEOUT_SECONDS,
         ),
-        source="TheBostonCalendar listing",
+        source="Boston.gov",
     )
-    soup = BeautifulSoup(listing.text, "html.parser")
-    links = sorted(
-        {
-            urljoin(base_url, anchor.get("href"))
-            for anchor in soup.select("a[href*='/events/']")
-            if anchor.get("href") and anchor.get("href") != "/events"
-        }
-    )[:MAX_BOSTON_CALENDAR_EVENTS]
-
-    events = []
-    for index, url in enumerate(links, start=1):
-        try:
-            LOGGER.info("Fetching Boston Calendar detail %s/%s", index, len(links))
-            detail = request_with_retry(
-                lambda target=url: requests.get(
-                    target, headers=HEADERS, timeout=REQUEST_TIMEOUT_SECONDS
-                ),
-                source="TheBostonCalendar detail",
-            )
-            event = parse_boston_calendar_detail(detail.text, url)
-            if is_in_collection_window(event.get("date")):
-                events.append(event)
-            time.sleep(0.5)
-        except (requests.RequestException, ValueError) as error:
-            LOGGER.warning("Skipping Boston Calendar detail %s: %s", url, error)
-    LOGGER.info("The Boston Calendar returned %s relevant events", len(events))
+    events = parse_boston_gov_rss(response.text)
+    LOGGER.info("Boston.gov returned %s relevant events", len(events))
     return events
 
 
@@ -350,8 +279,7 @@ def deduplicate_and_rank(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def collect_events() -> dict[str, Any]:
     sources = (
         ("Ticketmaster", fetch_ticketmaster_events),
-        ("Eventbrite", fetch_eventbrite_events),
-        ("TheBostonCalendar", fetch_boston_calendar_events),
+        ("Boston.gov", fetch_boston_gov_events),
     )
     collected = []
     failures = []

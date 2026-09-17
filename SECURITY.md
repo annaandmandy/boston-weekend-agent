@@ -5,7 +5,7 @@ Lambda environment values to this repository.
 
 Production secrets are expected in AWS Secrets Manager:
 
-- `boston-weekend-agent/events-api`: `TICKETMASTER_API_KEY`, `EVENTBRITE_TOKEN`
+- `boston-weekend-agent/events-api`: `TICKETMASTER_API_KEY`
 - `boston-weekend-agent/openai`: `OPENAI_API_KEY`
 
 Lambda environment variables contain only the corresponding secret ARN. Each

@@ -57,7 +57,7 @@ Create `collect_events_v2` as an x86_64 image Lambda. Configure:
 - Timeout: 300 seconds
 - `EVENTS_SECRET_ID`: full secret ARN
 - `REPORT_BUCKET`: `boston-weekend-agent-reports`
-- `MAX_BOSTON_CALENDAR_EVENTS`: `5`
+- `MAX_EVENTS_PER_SOURCE`: `10`
 
 Attach the standard Lambda basic execution policy and the scoped statements in
 `infrastructure/iam/collect-events-policy.json` after replacing the placeholder.

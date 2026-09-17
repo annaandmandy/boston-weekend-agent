@@ -7,6 +7,11 @@ The project originally used an EC2-hosted scraper and an ECR-backed report
 Lambda. This version removes the always-on EC2 dependency and packages both the
 event collector and report generator as reproducible Lambda container images.
 
+Eventbrite's city-wide Event Search endpoint was retired in 2019, so an
+Eventbrite token cannot provide public Boston discovery. The collector uses the
+City of Boston's official events RSS feed instead of scraping a site that blocks
+cloud-hosted requests.
+
 ## Architecture
 
 ```text
@@ -17,8 +22,7 @@ AWS Step Functions
         |
         +--> Event collector Lambda
         |      +-- Ticketmaster API
-        |      +-- Eventbrite API
-        |      +-- The Boston Calendar
+        |      +-- City of Boston events RSS
         |      +-- Secrets Manager
         |      `-- S3 events/latest.json
         |
@@ -50,7 +54,7 @@ tests/                  Offline parser and prioritization tests
 No provider credential is stored in source code or in a Lambda environment
 variable. Lambda configuration stores only Secrets Manager ARNs:
 
-- Event collector: `TICKETMASTER_API_KEY`, `EVENTBRITE_TOKEN`
+- Event collector: `TICKETMASTER_API_KEY`
 - Report generator: `OPENAI_API_KEY`
 
 Each function receives permission to read only its own secret. See
@@ -92,7 +96,7 @@ tests each Lambda independently before changing the production state machine.
 
 - Provider failures are isolated so one unavailable source does not discard
   usable events from other sources.
-- Boston Calendar detail requests are capped and rate-limited.
+- City of Boston events come from the City's official public RSS feed.
 - Event and report snapshots are timestamped while stable `latest` keys support
   the website.
 - The report Lambda reads source data directly from S3, keeping Step Functions

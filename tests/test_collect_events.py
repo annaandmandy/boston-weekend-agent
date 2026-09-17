@@ -26,26 +26,26 @@ class CollectEventsTests(unittest.TestCase):
             MODULE.is_in_collection_window("2026-09-25", today=date(2026, 9, 17))
         )
 
-    def test_parse_boston_calendar_detail(self):
-        html = """
-        <div id="content-event-left">
-          <div id="event_info">
-            <h1 itemprop="name">Boston Test Event</h1>
-            <span itemprop="startDate" content="2026-09-18T18:00:00"></span>
-            <span id="starting_time">6:00 PM</span>
-            <p itemprop="location">
-              <span itemprop="name">Boston Common</span>
-              <span itemprop="address">139 Tremont St, Boston</span>
-            </p>
-            <p><strong>Admission:</strong> Free</p>
-          </div>
-        </div>
-        """
-        event = MODULE.parse_boston_calendar_detail(
-            html, "https://www.thebostoncalendar.com/events/test"
-        )
+    def test_parse_boston_gov_rss(self):
+        rss = """<?xml version="1.0"?>
+        <rss version="2.0"><channel><item>
+          <title>Boston Test Event</title>
+          <link>https://www.boston.gov/calendar/test</link>
+          <description><![CDATA[
+            <div class="date-recur-date">
+              <time datetime="2026-09-18T18:00:00Z">Fri, 09/18/2026 - 6:00pm</time>
+            </div>
+            <p class="address"><span class="address-line1">Boston Common</span>
+              <span class="locality">Boston</span>, <span>MA</span></p>
+            <p>Join this free community event.</p>
+          ]]></description>
+        </item></channel></rss>"""
+        events = MODULE.parse_boston_gov_rss(rss, today=date(2026, 9, 17))
+        self.assertEqual(len(events), 1)
+        event = events[0]
         self.assertEqual(event["name"], "Boston Test Event")
         self.assertEqual(event["date"], "2026-09-18")
+        self.assertEqual(event["time"], "6:00pm")
         self.assertEqual(event["location"], "Boston Common")
         self.assertEqual(event["price"], "Free")
 
