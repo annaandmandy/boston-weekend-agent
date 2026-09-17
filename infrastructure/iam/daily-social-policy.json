@@ -8,6 +8,17 @@
       "Resource": "${OPENAI_SECRET_ARN}"
     },
     {
+      "Sid": "FindSocialHistory",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::boston-weekend-agent-reports",
+      "Condition": {
+        "StringEquals": {
+          "s3:prefix": "social/history.json"
+        }
+      }
+    },
+    {
       "Sid": "ReadSocialInputs",
       "Effect": "Allow",
       "Action": "s3:GetObject",

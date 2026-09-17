@@ -148,8 +148,10 @@ invent dates, times, prices, venues, availability, or cancellation status.
 
 Keep the body concise, friendly, and useful to people living around Greater
 Boston. Mention 3-5 activities when available, preserve their source links, and
-end with the weekend-report URL. Do not claim that an event is recommended from
-personal experience. Return strict JSON with exactly these keys:
+end with the weekend-report URL. Use plain text and raw URLs; do not use Markdown
+link syntax because the same copy is pasted directly into both platforms. Do
+not claim that an event is recommended from personal experience. Return strict
+JSON with exactly these keys:
 title (string), body (string), hashtags (array of strings).""",
             ),
             (
@@ -277,4 +279,3 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     }
     LOGGER.info("Daily social campaign generated: %s", json.dumps(result))
     return result
-

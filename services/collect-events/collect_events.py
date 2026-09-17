@@ -542,6 +542,7 @@ def parse_quincy_events(
             for node in (start_time, end_time)
             if node
         ]
+        time_parts = normalize_time_range(time_parts)
         venue_node = top_section.select_one(".mec-venue-details > span")
         address_node = top_section.select_one(".mec-event-address")
         description_node = top_section.select_one(".mec-event-description")
@@ -576,6 +577,28 @@ def parse_quincy_events(
             }
         )
     return events[:MAX_CITY_EVENTS]
+
+
+def normalize_time_range(parts: list[str]) -> list[str]:
+    """Repair an implausible AM/PM marker emitted by some calendar list views."""
+    if len(parts) != 2:
+        return parts
+    parsed = []
+    for value in parts:
+        match = re.fullmatch(r"(\d{1,2}):(\d{2})\s*([ap]m)", value, re.IGNORECASE)
+        if not match:
+            return parts
+        hour = int(match.group(1)) % 12
+        if match.group(3).lower() == "pm":
+            hour += 12
+        parsed.append(hour * 60 + int(match.group(2)))
+    duration = parsed[1] - parsed[0]
+    if duration < 0:
+        duration += 24 * 60
+    if duration > 14 * 60 and parts[0].lower().endswith("am") and parts[1].lower().endswith("pm"):
+        corrected = re.sub(r"am$", "pm", parts[0], flags=re.IGNORECASE)
+        return [corrected, parts[1]]
+    return parts
 
 
 def fetch_quincy_events() -> list[dict[str, Any]]:

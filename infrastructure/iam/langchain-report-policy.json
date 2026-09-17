@@ -8,6 +8,20 @@
       "Resource": "${OPENAI_SECRET_ARN}"
     },
     {
+      "Sid": "FindOptionalReportInputs",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::boston-weekend-agent-reports",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": [
+            "events/changes/latest.json",
+            "reports/baselines/*"
+          ]
+        }
+      }
+    },
+    {
       "Sid": "ReadPipelineInputs",
       "Effect": "Allow",
       "Action": "s3:GetObject",

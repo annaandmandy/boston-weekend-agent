@@ -177,6 +177,16 @@ END:VCALENDAR\r
         self.assertEqual(event["location"], "Kilroy Square")
         self.assertEqual(event["price"], "Free")
 
+    def test_repairs_implausible_quincy_am_pm_range(self):
+        self.assertEqual(
+            MODULE.normalize_time_range(["3:00 am", "7:00 pm"]),
+            ["3:00 pm", "7:00 pm"],
+        )
+        self.assertEqual(
+            MODULE.normalize_time_range(["8:00 am", "5:00 pm"]),
+            ["8:00 am", "5:00 pm"],
+        )
+
     def test_deduplicates_same_event_from_multiple_calendars(self):
         common = {
             "name": "Community Arts Festival",

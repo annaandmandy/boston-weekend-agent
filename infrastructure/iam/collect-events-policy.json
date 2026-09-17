@@ -8,6 +8,17 @@
       "Resource": "${EVENTS_SECRET_ARN}"
     },
     {
+      "Sid": "FindPreviousEventSnapshot",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::boston-weekend-agent-reports",
+      "Condition": {
+        "StringEquals": {
+          "s3:prefix": "events/latest.json"
+        }
+      }
+    },
+    {
       "Sid": "ReadPreviousEventSnapshot",
       "Effect": "Allow",
       "Action": "s3:GetObject",
