@@ -84,6 +84,17 @@ image Lambda to the new image URI. Configure:
 
 Remove the plaintext `OPENAI_API_KEY` Lambda environment variable.
 
+Before deploying analytics history, enable Versioning on the report bucket.
+Update the report role with `infrastructure/iam/langchain-report-policy.json`,
+which adds exact-version reads and scoped `analytics/*` access. Also configure:
+
+- `REPORT_PROMPT_VERSION`: increment this whenever the prompt contract changes
+
+After direct invocation, verify that one new directory exists under
+`analytics/report_runs/year=YYYY/month=MM/day=DD/`. It must contain archived
+inputs, `effective_event_changes.json`, `report.txt`, and `report.json`. Inspect
+the manifest's source VersionIds and ETags before enabling the schedule.
+
 ## Build the daily social generator
 
 ```bash

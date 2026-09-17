@@ -24,13 +24,24 @@
     {
       "Sid": "ReadPipelineInputs",
       "Effect": "Allow",
-      "Action": "s3:GetObject",
+      "Action": [
+        "s3:GetObject",
+        "s3:GetObjectVersion"
+      ],
       "Resource": [
         "arn:aws:s3:::boston-weekend-agent-reports/events/latest.json",
         "arn:aws:s3:::boston-weekend-agent-reports/events/changes/latest.json",
+        "arn:aws:s3:::boston-weekend-agent-reports/weather/latest.json",
         "arn:aws:s3:::boston-weekend-agent-reports/weather/summary.json",
-        "arn:aws:s3:::boston-weekend-agent-reports/reports/baselines/*"
+        "arn:aws:s3:::boston-weekend-agent-reports/reports/baselines/*",
+        "arn:aws:s3:::boston-weekend-agent-reports/analytics/*"
       ]
+    },
+    {
+      "Sid": "WriteAnalyticsHistory",
+      "Effect": "Allow",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::boston-weekend-agent-reports/analytics/*"
     },
     {
       "Sid": "WriteReports",

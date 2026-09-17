@@ -3,6 +3,7 @@ import pathlib
 import sys
 import unittest
 from datetime import datetime
+from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
 
@@ -19,6 +20,54 @@ SPEC.loader.exec_module(MODULE)
 
 
 class LangChainReportTests(unittest.TestCase):
+    def test_analytics_prefix_is_partitioned_and_unique(self):
+        now = datetime(
+            2026,
+            9,
+            18,
+            7,
+            15,
+            12,
+            345678,
+            tzinfo=ZoneInfo("America/New_York"),
+        )
+        prefix = MODULE.analytics_run_prefix(now)
+        self.assertEqual(
+            prefix,
+            "analytics/report_runs/year=2026/month=09/day=18/"
+            "run_id=20260918T071512345678-0400",
+        )
+
+    def test_archive_input_uses_the_exact_s3_version(self):
+        original_s3 = MODULE.S3
+        mock_s3 = MagicMock()
+        mock_s3.head_object.return_value = {
+            "VersionId": "source-version",
+            "ETag": '"source-etag"',
+        }
+        mock_s3.copy_object.return_value = {"VersionId": "archive-version"}
+        MODULE.S3 = mock_s3
+        try:
+            lineage = MODULE.archive_input_object(
+                "events/latest.json",
+                "analytics/run/events.json",
+            )
+        finally:
+            MODULE.S3 = original_s3
+
+        mock_s3.copy_object.assert_called_once_with(
+            Bucket=MODULE.BUCKET_NAME,
+            Key="analytics/run/events.json",
+            CopySource={
+                "Bucket": MODULE.BUCKET_NAME,
+                "Key": "events/latest.json",
+                "VersionId": "source-version",
+            },
+            MetadataDirective="COPY",
+        )
+        self.assertEqual(lineage["source_etag"], "source-etag")
+        self.assertEqual(lineage["archive_version_id"], "archive-version")
+
     def test_prioritizes_free_event_today(self):
         now = datetime(2026, 9, 18, 9, tzinfo=ZoneInfo("America/New_York"))
         data = {
@@ -110,6 +159,42 @@ class LangChainReportTests(unittest.TestCase):
         self.assertEqual(changes["updated"][0]["changes"]["time"]["after"], "19:00:00")
         self.assertEqual(changes["new"][0]["name"], "New Event")
         self.assertEqual(changes["missing"][0]["status"], "unconfirmed_missing")
+
+    def test_analytics_manifest_records_inputs_model_and_outputs(self):
+        original_s3 = MODULE.S3
+        mock_s3 = MagicMock()
+        MODULE.S3 = mock_s3
+        try:
+            keys = MODULE.store_analytics_manifest(
+                prefix=(
+                    "analytics/report_runs/year=2026/month=09/day=18/"
+                    "run_id=test-run"
+                ),
+                result={
+                    "report": "Weekend report",
+                    "generated_at": "2026-09-18T07:15:00-04:00",
+                    "edition": "friday-update",
+                    "model": "gpt-4o",
+                    "prompt_version": "v2",
+                    "token_usage": {"total_tokens": 123},
+                    "events_count": 8,
+                },
+                archived_inputs={"events": {"archive_key": "events.json"}},
+                report_keys={"latest": "reports/weekend_summary.txt"},
+                effective_changes_key="effective_event_changes.json",
+                baseline_lineage={"archive_key": "thursday_baseline.json"},
+                lambda_request_id="request-123",
+            )
+        finally:
+            MODULE.S3 = original_s3
+
+        self.assertEqual(keys["manifest"].rsplit("/", 1)[-1], "report.json")
+        self.assertEqual(keys["report_text"].rsplit("/", 1)[-1], "report.txt")
+        manifest_call = mock_s3.put_object.call_args_list[-1].kwargs
+        manifest = __import__("json").loads(manifest_call["Body"].decode("utf-8"))
+        self.assertEqual(manifest["model"], "gpt-4o")
+        self.assertEqual(manifest["token_usage"]["total_tokens"], 123)
+        self.assertEqual(manifest["lambda_request_id"], "request-123")
 
 
 if __name__ == "__main__":

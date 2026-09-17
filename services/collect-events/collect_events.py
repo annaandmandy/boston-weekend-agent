@@ -852,7 +852,7 @@ def write_snapshot(
     now = _now()
     body = json.dumps(snapshot, ensure_ascii=False, indent=2).encode("utf-8")
     timestamped_key = (
-        f"events/{now:%Y-%m}/events_{now:%Y%m%d_%H%M%S}.json"
+        f"events/{now:%Y-%m}/events_{now:%Y%m%d_%H%M%S_%f}.json"
     )
     latest_key = "events/latest.json"
     for key in (timestamped_key, latest_key):
@@ -863,16 +863,22 @@ def write_snapshot(
             ContentType="application/json",
         )
     changes_key = "events/changes/latest.json"
-    S3.put_object(
-        Bucket=BUCKET_NAME,
-        Key=changes_key,
-        Body=json.dumps(changes, ensure_ascii=False, indent=2).encode("utf-8"),
-        ContentType="application/json",
+    changes_timestamped_key = (
+        f"events/changes/{now:%Y-%m}/changes_{now:%Y%m%d_%H%M%S_%f}.json"
     )
+    changes_body = json.dumps(changes, ensure_ascii=False, indent=2).encode("utf-8")
+    for key in (changes_key, changes_timestamped_key):
+        S3.put_object(
+            Bucket=BUCKET_NAME,
+            Key=key,
+            Body=changes_body,
+            ContentType="application/json",
+        )
     return {
         "latest": latest_key,
         "timestamped": timestamped_key,
         "changes": changes_key,
+        "changes_timestamped": changes_timestamped_key,
     }
 
 

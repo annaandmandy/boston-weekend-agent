@@ -3,6 +3,7 @@ import pathlib
 import sys
 import unittest
 from datetime import date
+from unittest.mock import MagicMock
 
 
 MODULE_PATH = (
@@ -18,6 +19,34 @@ SPEC.loader.exec_module(MODULE)
 
 
 class CollectEventsTests(unittest.TestCase):
+    def test_writes_immutable_event_and_change_snapshots(self):
+        original_s3 = MODULE.S3
+        mock_s3 = MagicMock()
+        MODULE.S3 = mock_s3
+        try:
+            keys = MODULE.write_snapshot(
+                {"timestamp": "2026-09-18T06:00:00-04:00", "events": []},
+                {"new": [], "updated": [], "missing": []},
+            )
+        finally:
+            MODULE.S3 = original_s3
+
+        self.assertEqual(keys["changes"], "events/changes/latest.json")
+        self.assertRegex(
+            keys["changes_timestamped"],
+            r"^events/changes/\d{4}-\d{2}/changes_\d{8}_\d{6}_\d{6}\.json$",
+        )
+        self.assertRegex(
+            keys["timestamped"],
+            r"^events/\d{4}-\d{2}/events_\d{8}_\d{6}_\d{6}\.json$",
+        )
+        written_keys = [
+            call.kwargs["Key"] for call in mock_s3.put_object.call_args_list
+        ]
+        self.assertIn("events/latest.json", written_keys)
+        self.assertIn("events/changes/latest.json", written_keys)
+        self.assertEqual(len(written_keys), 4)
+
     def test_date_window(self):
         self.assertTrue(
             MODULE.is_in_collection_window("2026-09-18", today=date(2026, 9, 17))

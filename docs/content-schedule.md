@@ -18,6 +18,10 @@ Friday run compares against that Thursday baseline rather than the immediately
 preceding daily collection, so its new and updated items reflect the actual
 published preview.
 
+Each report also creates an immutable analytics run containing the exact S3
+object versions supplied to the LLM and a structured lineage manifest. See
+[`analytics-history.md`](analytics-history.md).
+
 ## Change handling
 
 The collector compares each run with the previous snapshot and writes

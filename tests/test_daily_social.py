@@ -3,6 +3,7 @@ import pathlib
 import sys
 import unittest
 from datetime import datetime, timedelta
+from unittest.mock import MagicMock
 from zoneinfo import ZoneInfo
 
 
@@ -58,6 +59,38 @@ class DailySocialTests(unittest.TestCase):
         rendered = MODULE.render_shared_text(content)
         self.assertIn("Boston 今日活动", rendered)
         self.assertIn("#Boston #波士顿生活", rendered)
+
+    def test_campaign_archive_key_is_immutable_for_retries(self):
+        original_s3 = MODULE.S3
+        MODULE.S3 = MagicMock()
+        now = datetime(
+            2026,
+            9,
+            17,
+            7,
+            0,
+            0,
+            123456,
+            tzinfo=ZoneInfo("America/New_York"),
+        )
+        try:
+            keys = MODULE.store_campaign(
+                {
+                    "title": "Boston 今日活动",
+                    "body": "今天的活动。",
+                    "hashtags": ["Boston"],
+                },
+                [{"event_id": "event-1"}],
+                {},
+                now,
+            )
+        finally:
+            MODULE.S3 = original_s3
+
+        self.assertEqual(
+            keys["archive"],
+            "social/campaigns/2026/09/2026-09-17_070000_123456.json",
+        )
 
 
 if __name__ == "__main__":

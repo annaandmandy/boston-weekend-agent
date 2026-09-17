@@ -19,6 +19,7 @@ LOGGER.setLevel(os.environ.get("LOG_LEVEL", "INFO").upper())
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 BUCKET_NAME = os.environ.get("REPORT_BUCKET", "boston-weekend-agent-reports")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")
+PROMPT_VERSION = os.environ.get("REPORT_PROMPT_VERSION", "v2")
 EASTERN = ZoneInfo("America/New_York")
 
 S3 = boto3.client("s3", region_name=AWS_REGION)
@@ -47,16 +48,117 @@ def load_json(key: str) -> dict[str, Any]:
     return json.loads(response["Body"].read().decode("utf-8"))
 
 
+def is_missing_s3_error(error: Exception) -> bool:
+    return getattr(error, "response", {}).get("Error", {}).get("Code") in {
+        "NoSuchKey",
+        "404",
+    }
+
+
 def load_optional_json(key: str) -> dict[str, Any]:
     try:
         return load_json(key)
     except Exception as error:
-        if getattr(error, "response", {}).get("Error", {}).get("Code") in {
-            "NoSuchKey",
-            "404",
-        }:
+        if is_missing_s3_error(error):
             return {}
         raise
+
+
+def analytics_run_prefix(now: datetime) -> str:
+    """Build an immutable, Athena-friendly partition for one report run."""
+    run_id = now.strftime("%Y%m%dT%H%M%S%f%z")
+    return (
+        f"analytics/report_runs/"
+        f"year={now:%Y}/"
+        f"month={now:%m}/"
+        f"day={now:%d}/"
+        f"run_id={run_id}"
+    )
+
+
+def archive_input_object(
+    source_key: str,
+    destination_key: str,
+) -> dict[str, Any]:
+    """Copy one exact S3 input version into the immutable analytics run."""
+    head = S3.head_object(
+        Bucket=BUCKET_NAME,
+        Key=source_key,
+    )
+
+    copy_source = {
+        "Bucket": BUCKET_NAME,
+        "Key": source_key,
+    }
+
+    source_version_id = head.get("VersionId")
+    if source_version_id:
+        copy_source["VersionId"] = source_version_id
+
+    copied = S3.copy_object(
+        Bucket=BUCKET_NAME,
+        Key=destination_key,
+        CopySource=copy_source,
+        MetadataDirective="COPY",
+    )
+
+    return {
+        "status": "archived",
+        "source_key": source_key,
+        "source_version_id": source_version_id,
+        "source_etag": str(head.get("ETag", "")).strip('"'),
+        "archive_key": destination_key,
+        "archive_version_id": copied.get("VersionId"),
+    }
+
+
+def archive_optional_input_object(
+    source_key: str,
+    destination_key: str,
+) -> dict[str, Any]:
+    try:
+        return archive_input_object(source_key, destination_key)
+    except Exception as error:
+        if is_missing_s3_error(error):
+            return {
+                "status": "missing",
+                "source_key": source_key,
+                "archive_key": None,
+            }
+        raise
+
+
+def archive_report_inputs(
+    now: datetime,
+) -> tuple[str, dict[str, dict[str, Any]]]:
+    """Archive every input used by one report and return its lineage."""
+    prefix = analytics_run_prefix(now)
+
+    input_objects = {
+        "events": (
+            "events/latest.json",
+            f"{prefix}/events.json",
+        ),
+        "event_changes": (
+            "events/changes/latest.json",
+            f"{prefix}/event_changes.json",
+        ),
+        "weather": (
+            "weather/latest.json",
+            f"{prefix}/weather.json",
+        ),
+        "weather_summary": (
+            "weather/summary.json",
+            f"{prefix}/weather_summary.json",
+        ),
+    }
+
+    archived = {
+        name: archive_input_object(source_key, destination_key)
+        for name, (source_key, destination_key) in input_objects.items()
+    }
+
+    return prefix, archived
 
 
 def determine_edition(now: datetime, override: str | None = None) -> str:
@@ -381,17 +483,24 @@ def generate_report(
         }
     )
     report = normalize_report_text(result.content)
+    usage_metadata = getattr(result, "usage_metadata", None)
+    if not usage_metadata:
+        usage_metadata = getattr(result, "response_metadata", {}).get(
+            "token_usage", {}
+        )
     return {
         "report": report,
         "generated_at": now.isoformat(),
         "events_count": len(events),
         "edition": edition,
+        "model": OPENAI_MODEL,
+        "prompt_version": PROMPT_VERSION,
+        "token_usage": usage_metadata or {},
         "context": context,
     }
 
 
-def store_report(result: dict[str, Any]) -> dict[str, str]:
-    now = datetime.now(EASTERN)
+def store_report(result: dict[str, Any], now: datetime) -> dict[str, str]:
     body = result["report"].encode("utf-8")
     timestamped_key = f"reports/{now:%Y-%m}/report_{now:%Y%m%d_%H%M%S}.txt"
     archive_key = (
@@ -413,20 +522,94 @@ def store_report(result: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def store_analytics_json(key: str, value: dict[str, Any]) -> str:
+    S3.put_object(
+        Bucket=BUCKET_NAME,
+        Key=key,
+        Body=json.dumps(value, ensure_ascii=False, indent=2).encode("utf-8"),
+        ContentType="application/json",
+    )
+    return key
+
+
+def store_analytics_manifest(
+    *,
+    prefix: str,
+    result: dict[str, Any],
+    archived_inputs: dict[str, dict[str, Any]],
+    report_keys: dict[str, str],
+    effective_changes_key: str,
+    baseline_lineage: dict[str, Any] | None,
+    lambda_request_id: str | None,
+) -> dict[str, str]:
+    report_text_key = f"{prefix}/report.txt"
+    S3.put_object(
+        Bucket=BUCKET_NAME,
+        Key=report_text_key,
+        Body=result["report"].encode("utf-8"),
+        ContentType="text/plain; charset=utf-8",
+    )
+
+    manifest_key = f"{prefix}/report.json"
+    manifest = {
+        "schema_version": 1,
+        "run_id": prefix.rsplit("run_id=", 1)[-1],
+        "generated_at": result["generated_at"],
+        "edition": result["edition"],
+        "model": result["model"],
+        "prompt_version": result["prompt_version"],
+        "token_usage": result["token_usage"],
+        "events_count": result["events_count"],
+        "lambda_request_id": lambda_request_id,
+        "input_objects": archived_inputs,
+        "derived_objects": {
+            "effective_event_changes": effective_changes_key,
+            "weekend_baseline": baseline_lineage,
+        },
+        "output_objects": {
+            **report_keys,
+            "analytics_report_text": report_text_key,
+        },
+        "report_text": result["report"],
+    }
+    store_analytics_json(manifest_key, manifest)
+    return {"manifest": manifest_key, "report_text": report_text_key}
+
+
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     now = datetime.now(EASTERN)
-    events_data = load_json("events/latest.json")
-    weather_data = load_json("weather/summary.json")
-    changes_data = load_optional_json("events/changes/latest.json")
+    analytics_prefix, archived_inputs = archive_report_inputs(now)
+    events_data = load_json(archived_inputs["events"]["archive_key"])
+    weather_data = load_json(
+        archived_inputs["weather_summary"]["archive_key"]
+    )
+    changes_data = load_json(
+        archived_inputs["event_changes"]["archive_key"]
+    )
     edition_override = event.get("edition") if isinstance(event, dict) else None
     edition = determine_edition(now, edition_override)
     baseline_key = weekend_baseline_key(now)
+    baseline_lineage = None
     if edition == "thursday-preview":
         store_weekend_baseline(events_data, now)
+        baseline_lineage = {
+            "status": "created",
+            "role": "created_for_friday_comparison",
+            "key": baseline_key,
+        }
     elif edition == "friday-update":
-        baseline = load_optional_json(baseline_key)
-        if baseline:
+        baseline_lineage = archive_optional_input_object(
+            baseline_key,
+            f"{analytics_prefix}/thursday_baseline.json",
+        )
+        if baseline_lineage["status"] == "archived":
+            baseline = load_json(baseline_lineage["archive_key"])
             changes_data = compare_event_snapshots(baseline, events_data)
+
+    effective_changes_key = store_analytics_json(
+        f"{analytics_prefix}/effective_event_changes.json",
+        changes_data,
+    )
     result = generate_report(
         events_data,
         weather_data,
@@ -434,13 +617,25 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         edition_override=edition_override,
         now=now,
     )
-    keys = store_report(result)
+    keys = store_report(result, now)
+    analytics_keys = store_analytics_manifest(
+        prefix=analytics_prefix,
+        result=result,
+        archived_inputs=archived_inputs,
+        report_keys=keys,
+        effective_changes_key=effective_changes_key,
+        baseline_lineage=baseline_lineage,
+        lambda_request_id=getattr(context, "aws_request_id", None),
+    )
     response = {
         "success": True,
         "generated_at": result["generated_at"],
         "events_count": result["events_count"],
         "edition": result["edition"],
         "baseline_key": baseline_key,
+        "analytics_prefix": analytics_prefix,
+        "archived_inputs": archived_inputs,
+        "analytics_keys": analytics_keys,
         "bucket": BUCKET_NAME,
         "s3_keys": keys,
     }

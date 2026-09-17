@@ -56,6 +56,7 @@ infrastructure/
 docs/
   deployment.md         Manual deployment and verification procedure
   event-sources.md       Active and candidate Greater Boston sources
+  analytics-history.md   Immutable report inputs and lineage manifest
   migration-checklist.md
 tests/                  Offline parser and prioritization tests
 ```
@@ -80,6 +81,7 @@ Use Python 3.11:
 python -m pip install \
   -r services/collect-events/requirements.txt \
   -r services/langchain-report/requirements.txt \
+  -r services/daily-social/requirements.txt \
   boto3
 
 AWS_EC2_METADATA_DISABLED=true \
@@ -89,7 +91,7 @@ AWS_DEFAULT_REGION=us-east-1 \
 python -m unittest discover -s tests -v
 ```
 
-Build both Linux images without publishing them:
+Build the Linux images without publishing them:
 
 ```bash
 docker buildx build --platform linux/amd64 --provenance=false --load \
@@ -97,6 +99,9 @@ docker buildx build --platform linux/amd64 --provenance=false --load \
 
 docker buildx build --platform linux/amd64 --provenance=false --load \
   -t boston-weekend-langchain:local services/langchain-report
+
+docker buildx build --platform linux/amd64 --provenance=false --load \
+  -t boston-weekend-daily-social:local services/daily-social
 ```
 
 ## Deployment
@@ -112,6 +117,8 @@ tests each Lambda independently before changing the production state machine.
   Greater Boston. See [`docs/event-sources.md`](docs/event-sources.md).
 - Event and report snapshots are timestamped while stable `latest` keys support
   the website.
+- Each report archives the exact versioned inputs it used and writes a structured
+  analytics manifest with model, prompt, token, input, and output lineage.
 - Events are collected daily for a ten-day window. The full weekend workflow
   runs Thursday for an early planning edition and Friday for a refreshed edition.
 - One social post is generated daily and reused unchanged for Threads and

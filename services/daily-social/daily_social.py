@@ -236,7 +236,10 @@ def store_campaign(
     history_body = json.dumps(history, ensure_ascii=False, indent=2).encode("utf-8")
     keys = {
         "latest": "social/latest.json",
-        "archive": f"social/campaigns/{now:%Y/%m}/{campaign_id}.json",
+        "archive": (
+            f"social/campaigns/{now:%Y/%m}/"
+            f"{campaign_id}_{now:%H%M%S_%f}.json"
+        ),
         "history": "social/history.json",
     }
     for key in (keys["latest"], keys["archive"]):
