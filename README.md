@@ -34,6 +34,12 @@ AWS Step Functions
                +-- Secrets Manager
                +-- OpenAI API
                `-- S3 reports/weekend_summary.txt
+
+Daily social Lambda
+        +-- Reads the same normalized event snapshot
+        +-- Enforces a 48-hour event cooldown
+        +-- Calls OpenAI once for shared copy
+        `-- S3 social/latest.json and social/latest.txt
 ```
 
 ## Repository layout
@@ -42,9 +48,11 @@ AWS Step Functions
 services/
   collect-events/       Event aggregation and normalization Lambda
   langchain-report/     LLM report-generation Lambda
+  daily-social/         Shared Threads/Xiaohongshu content Lambda
 infrastructure/
   iam/                  Least-privilege policy templates
   step-functions/       Target state-machine definition
+  cloudformation/       Timezone-aware EventBridge Scheduler resources
 docs/
   deployment.md         Manual deployment and verification procedure
   event-sources.md       Active and candidate Greater Boston sources
@@ -59,6 +67,7 @@ variable. Lambda configuration stores only Secrets Manager ARNs:
 
 - Event collector: `TICKETMASTER_API_KEY`
 - Report generator: `OPENAI_API_KEY`
+- Daily social generator: `OPENAI_API_KEY`
 
 Each function receives permission to read only its own secret. See
 [`SECURITY.md`](SECURITY.md) for repository rules.
@@ -103,5 +112,12 @@ tests each Lambda independently before changing the production state machine.
   Greater Boston. See [`docs/event-sources.md`](docs/event-sources.md).
 - Event and report snapshots are timestamped while stable `latest` keys support
   the website.
+- Events are collected daily for a ten-day window. The full weekend workflow
+  runs Thursday for an early planning edition and Friday for a refreshed edition.
+- One social post is generated daily and reused unchanged for Threads and
+  Xiaohongshu, with a 48-hour event cooldown.
 - The report Lambda reads source data directly from S3, keeping Step Functions
   payloads small.
+
+See [`docs/content-schedule.md`](docs/content-schedule.md) for the schedule and
+change-detection behavior.

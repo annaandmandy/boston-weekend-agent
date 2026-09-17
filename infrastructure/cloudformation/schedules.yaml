@@ -1,0 +1,94 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Timezone-aware schedules for the Boston Weekend Agent
+
+Parameters:
+  CollectorFunctionArn:
+    Type: String
+  DailySocialFunctionArn:
+    Type: String
+  WeekendStateMachineArn:
+    Type: String
+
+Resources:
+  SchedulerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: boston-weekend-scheduler-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: InvokeBostonWeekendWorkflows
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource:
+                  - !Ref CollectorFunctionArn
+                  - !Ref DailySocialFunctionArn
+              - Effect: Allow
+                Action: states:StartExecution
+                Resource: !Ref WeekendStateMachineArn
+
+  DailyCollectionSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: boston-weekend-daily-collection
+      Description: Collect the next ten days of Greater Boston events every morning.
+      ScheduleExpression: cron(0 6 * * ? *)
+      ScheduleExpressionTimezone: America/New_York
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      State: ENABLED
+      Target:
+        Arn: !Ref CollectorFunctionArn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: '{"trigger":"daily-collection"}'
+        RetryPolicy:
+          MaximumEventAgeInSeconds: 3600
+          MaximumRetryAttempts: 2
+
+  DailySocialSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: boston-weekend-daily-social
+      Description: Generate one shared Threads and Xiaohongshu post every morning.
+      ScheduleExpression: cron(0 7 * * ? *)
+      ScheduleExpressionTimezone: America/New_York
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      State: ENABLED
+      Target:
+        Arn: !Ref DailySocialFunctionArn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: '{"trigger":"daily-social"}'
+        RetryPolicy:
+          MaximumEventAgeInSeconds: 3600
+          MaximumRetryAttempts: 1
+
+  WeekendReportSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: boston-weekend-thursday-friday-report
+      Description: Publish Thursday preview and refresh it Friday morning.
+      ScheduleExpression: cron(15 7 ? * THU,FRI *)
+      ScheduleExpressionTimezone: America/New_York
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      State: ENABLED
+      Target:
+        Arn: !Ref WeekendStateMachineArn
+        RoleArn: !GetAtt SchedulerExecutionRole.Arn
+        Input: '{"trigger":"scheduled-weekend-report"}'
+        RetryPolicy:
+          MaximumEventAgeInSeconds: 3600
+          MaximumRetryAttempts: 1
+
+Outputs:
+  SchedulerExecutionRoleArn:
+    Value: !GetAtt SchedulerExecutionRole.Arn

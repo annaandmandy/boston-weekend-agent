@@ -47,6 +47,97 @@ def load_json(key: str) -> dict[str, Any]:
     return json.loads(response["Body"].read().decode("utf-8"))
 
 
+def load_optional_json(key: str) -> dict[str, Any]:
+    try:
+        return load_json(key)
+    except Exception as error:
+        if getattr(error, "response", {}).get("Error", {}).get("Code") in {
+            "NoSuchKey",
+            "404",
+        }:
+            return {}
+        raise
+
+
+def determine_edition(now: datetime, override: str | None = None) -> str:
+    if override:
+        return override
+    if now.weekday() == 3:
+        return "thursday-preview"
+    if now.weekday() == 4:
+        return "friday-update"
+    return "weekend-update"
+
+
+def weekend_start(now: datetime) -> date:
+    days_until_friday = (4 - now.weekday()) % 7
+    return now.date() + timedelta(days=days_until_friday)
+
+
+def weekend_baseline_key(now: datetime) -> str:
+    return f"reports/baselines/weekend_{weekend_start(now).isoformat()}.json"
+
+
+def _fallback_event_id(event: dict[str, Any]) -> str:
+    return "|".join(
+        str(event.get(field) or "").lower().strip()
+        for field in ("source", "link", "name", "city")
+    )
+
+
+def compare_event_snapshots(
+    baseline: dict[str, Any], current: dict[str, Any]
+) -> dict[str, Any]:
+    before = {
+        event.get("event_id") or _fallback_event_id(event): event
+        for event in baseline.get("events", [])
+    }
+    after = {
+        event.get("event_id") or _fallback_event_id(event): event
+        for event in current.get("events", [])
+    }
+    tracked_fields = ("date", "time", "location", "address", "price", "description", "link")
+    new_events = [after[event_id] for event_id in after.keys() - before.keys()]
+    updated = []
+    for event_id in after.keys() & before.keys():
+        changes = {
+            field: {"before": before[event_id].get(field), "after": after[event_id].get(field)}
+            for field in tracked_fields
+            if before[event_id].get(field) != after[event_id].get(field)
+        }
+        if changes:
+            updated.append(
+                {
+                    "event_id": event_id,
+                    "name": after[event_id].get("name"),
+                    "date": after[event_id].get("date"),
+                    "changes": changes,
+                }
+            )
+    missing = [
+        {
+            "event_id": event_id,
+            "name": before[event_id].get("name"),
+            "date": before[event_id].get("date"),
+            "source": before[event_id].get("source"),
+            "status": "unconfirmed_missing",
+        }
+        for event_id in before.keys() - after.keys()
+    ]
+    return {"new": new_events, "updated": updated, "missing": missing}
+
+
+def store_weekend_baseline(events_data: dict[str, Any], now: datetime) -> str:
+    key = weekend_baseline_key(now)
+    S3.put_object(
+        Bucket=BUCKET_NAME,
+        Key=key,
+        Body=json.dumps(events_data, ensure_ascii=False, indent=2).encode("utf-8"),
+        ContentType="application/json",
+    )
+    return key
+
+
 def upcoming_holidays(today: date, days_ahead: int = 7) -> list[str]:
     fixed = {
         (1, 1): "New Year's Day",
@@ -165,6 +256,27 @@ def format_events(events: list[dict[str, Any]], limit: int = 8) -> str:
     return "\n".join(lines)
 
 
+def format_event_changes(changes: dict[str, Any], limit: int = 6) -> str:
+    lines = []
+    for event in changes.get("new", [])[:limit]:
+        lines.append(
+            f"NEW: {event.get('name')} on {event.get('date')} "
+            f"({event.get('source', 'unknown source')})"
+        )
+    for event in changes.get("updated", [])[:limit]:
+        fields = ", ".join(event.get("changes", {}).keys()) or "details"
+        lines.append(
+            f"UPDATED: {event.get('name')} on {event.get('date')} changed {fields}"
+        )
+    missing = changes.get("missing", [])[:limit]
+    if missing:
+        lines.append(
+            "UNCONFIRMED MISSING (do not call these cancelled): "
+            + ", ".join(event.get("name", "Unknown") for event in missing)
+        )
+    return "\n".join(lines) or "No material event-listing changes were detected."
+
+
 def build_prompt():
     from langchain_core.prompts import ChatPromptTemplate
 
@@ -184,6 +296,13 @@ Current context:
 - Time: {time} ({time_of_day})
 - Weekend status: {weekend_status}
 - Upcoming holidays: {holiday_context}
+- Edition: {edition}
+
+For a Thursday preview, present this as an early planning edition and say that
+weather and event details will be checked again Friday morning. For a Friday
+update, naturally call out material new or changed listings and refreshed
+weather. Never describe an event as cancelled merely because it is listed as
+unconfirmed missing.
 
 Write 300-400 words with this structure:
 
@@ -208,6 +327,9 @@ Weather:
 
 Upcoming events:
 {events}
+
+Changes since the previous collection:
+{event_changes}
 """,
             ),
         ]
@@ -223,11 +345,19 @@ def normalize_report_text(content: Any) -> str:
     return report
 
 
-def generate_report(events_data: dict[str, Any], weather_data: dict[str, Any]) -> dict[str, Any]:
+def generate_report(
+    events_data: dict[str, Any],
+    weather_data: dict[str, Any],
+    changes_data: dict[str, Any] | None = None,
+    *,
+    edition_override: str | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
     from langchain_openai import ChatOpenAI
 
-    now = datetime.now(EASTERN)
+    now = now or datetime.now(EASTERN)
     context = build_time_context(now)
+    edition = determine_edition(now, edition_override)
     events = filter_and_prioritize_events(events_data, now)
     recommendations = (weather_data.get("summary") or {}).get("recommendations") or {}
     top_pick = recommendations.get("top_pick") or {}
@@ -240,12 +370,14 @@ def generate_report(events_data: dict[str, Any], weather_data: dict[str, Any]) -
     result = (build_prompt() | model).invoke(
         {
             **context,
+            "edition": edition,
             "holiday_context": ", ".join(context["holidays"]) or "None",
             "best_day": top_pick.get("date", "Unknown"),
             "best_time": top_pick.get("time_window", "Unknown"),
             "temperature": top_pick.get("temperature", "Unknown"),
             "rain_chance": top_pick.get("rain_chance", "Unknown"),
             "events": format_events(events),
+            "event_changes": format_event_changes(changes_data or {}),
         }
     )
     report = normalize_report_text(result.content)
@@ -253,6 +385,7 @@ def generate_report(events_data: dict[str, Any], weather_data: dict[str, Any]) -
         "report": report,
         "generated_at": now.isoformat(),
         "events_count": len(events),
+        "edition": edition,
         "context": context,
     }
 
@@ -261,26 +394,53 @@ def store_report(result: dict[str, Any]) -> dict[str, str]:
     now = datetime.now(EASTERN)
     body = result["report"].encode("utf-8")
     timestamped_key = f"reports/{now:%Y-%m}/report_{now:%Y%m%d_%H%M%S}.txt"
+    archive_key = (
+        f"reports/archive/{now:%Y/%m}/"
+        f"{now:%Y-%m-%d}_{result['edition']}.txt"
+    )
     latest_key = "reports/weekend_summary.txt"
-    for key in (timestamped_key, latest_key):
+    for key in (timestamped_key, archive_key, latest_key):
         S3.put_object(
             Bucket=BUCKET_NAME,
             Key=key,
             Body=body,
             ContentType="text/plain; charset=utf-8",
         )
-    return {"latest": latest_key, "timestamped": timestamped_key}
+    return {
+        "latest": latest_key,
+        "timestamped": timestamped_key,
+        "archive": archive_key,
+    }
 
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
+    now = datetime.now(EASTERN)
     events_data = load_json("events/latest.json")
     weather_data = load_json("weather/summary.json")
-    result = generate_report(events_data, weather_data)
+    changes_data = load_optional_json("events/changes/latest.json")
+    edition_override = event.get("edition") if isinstance(event, dict) else None
+    edition = determine_edition(now, edition_override)
+    baseline_key = weekend_baseline_key(now)
+    if edition == "thursday-preview":
+        store_weekend_baseline(events_data, now)
+    elif edition == "friday-update":
+        baseline = load_optional_json(baseline_key)
+        if baseline:
+            changes_data = compare_event_snapshots(baseline, events_data)
+    result = generate_report(
+        events_data,
+        weather_data,
+        changes_data,
+        edition_override=edition_override,
+        now=now,
+    )
     keys = store_report(result)
     response = {
         "success": True,
         "generated_at": result["generated_at"],
         "events_count": result["events_count"],
+        "edition": result["edition"],
+        "baseline_key": baseline_key,
         "bucket": BUCKET_NAME,
         "s3_keys": keys,
     }

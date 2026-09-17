@@ -8,6 +8,12 @@
       "Resource": "${EVENTS_SECRET_ARN}"
     },
     {
+      "Sid": "ReadPreviousEventSnapshot",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::boston-weekend-agent-reports/events/latest.json"
+    },
+    {
       "Sid": "WriteEventSnapshots",
       "Effect": "Allow",
       "Action": "s3:PutObject",

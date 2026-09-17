@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import os
 import re
@@ -24,7 +25,7 @@ LOGGER.setLevel(os.environ.get("LOG_LEVEL", "INFO").upper())
 
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 BUCKET_NAME = os.environ.get("REPORT_BUCKET", "boston-weekend-agent-reports")
-DAYS_AHEAD = int(os.environ.get("DAYS_AHEAD", "3"))
+DAYS_AHEAD = int(os.environ.get("DAYS_AHEAD", "10"))
 MAX_EVENTS_PER_SOURCE = int(os.environ.get("MAX_EVENTS_PER_SOURCE", "10"))
 MAX_CITY_EVENTS = int(os.environ.get("MAX_CITY_EVENTS", "30"))
 TICKETMASTER_RADIUS_MILES = int(os.environ.get("TICKETMASTER_RADIUS_MILES", "25"))
@@ -142,6 +143,47 @@ def clean_text(value: Any) -> str | None:
         return None
     cleaned = " ".join(str(value).split()).strip()
     return cleaned or None
+
+
+def _normalized_identity(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", str(value or "").lower()).strip()
+
+
+def make_event_id(event: dict[str, Any]) -> str:
+    """Create an ID that remains stable when an event time or date changes."""
+    link = str(event.get("link") or "").strip().lower().rstrip("/")
+    if link:
+        identity = f"{event.get('source', '')}|{link}"
+    else:
+        identity = "|".join(
+            (
+                str(event.get("source") or ""),
+                _normalized_identity(event.get("name")),
+                _normalized_identity(event.get("city")),
+            )
+        )
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
+
+
+def event_content_hash(event: dict[str, Any]) -> str:
+    fields = (
+        "name",
+        "date",
+        "time",
+        "location",
+        "address",
+        "city",
+        "category",
+        "price",
+        "description",
+        "link",
+    )
+    canonical = json.dumps(
+        {field: event.get(field) for field in fields},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def parse_event_date(value: str | None) -> date | None:
@@ -641,10 +683,88 @@ def deduplicate_and_rank(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         )
         if key not in unique or event["quality_score"] > unique[key]["quality_score"]:
             unique[key] = event
-    return sorted(
+    ranked = sorted(
         (event for event in unique.values() if event["quality_score"] >= 4),
         key=lambda event: (event.get("date") or "9999-12-31", -event["quality_score"]),
     )
+    for event in ranked:
+        event["event_id"] = make_event_id(event)
+        event["content_hash"] = event_content_hash(event)
+    return ranked
+
+
+def build_change_set(
+    previous: dict[str, Any] | None,
+    current: dict[str, Any],
+) -> dict[str, Any]:
+    """Compare snapshots without treating one missing scrape as a cancellation."""
+    previous_events = {
+        event.get("event_id") or make_event_id(event): event
+        for event in (previous or {}).get("events", [])
+    }
+    current_events = {
+        event.get("event_id") or make_event_id(event): event
+        for event in current.get("events", [])
+    }
+    tracked_fields = (
+        "name",
+        "date",
+        "time",
+        "location",
+        "address",
+        "price",
+        "description",
+        "link",
+    )
+
+    new_events = [
+        current_events[event_id]
+        for event_id in current_events.keys() - previous_events.keys()
+    ]
+    updated_events = []
+    for event_id in current_events.keys() & previous_events.keys():
+        before = previous_events[event_id]
+        after = current_events[event_id]
+        if (before.get("content_hash") or event_content_hash(before)) == after.get(
+            "content_hash"
+        ):
+            continue
+        changed_fields = {
+            field: {"before": before.get(field), "after": after.get(field)}
+            for field in tracked_fields
+            if before.get(field) != after.get(field)
+        }
+        updated_events.append(
+            {
+                "event_id": event_id,
+                "name": after.get("name"),
+                "date": after.get("date"),
+                "changes": changed_fields,
+            }
+        )
+
+    missing_events = [
+        {
+            "event_id": event_id,
+            "name": previous_events[event_id].get("name"),
+            "date": previous_events[event_id].get("date"),
+            "source": previous_events[event_id].get("source"),
+            "status": "unconfirmed_missing",
+        }
+        for event_id in previous_events.keys() - current_events.keys()
+    ]
+    return {
+        "generated_at": current.get("timestamp"),
+        "baseline_timestamp": (previous or {}).get("timestamp"),
+        "new": sorted(new_events, key=lambda item: item.get("date") or ""),
+        "updated": sorted(updated_events, key=lambda item: item.get("date") or ""),
+        "missing": sorted(missing_events, key=lambda item: item.get("date") or ""),
+        "counts": {
+            "new": len(new_events),
+            "updated": len(updated_events),
+            "missing": len(missing_events),
+        },
+    }
 
 
 def collect_events() -> dict[str, Any]:
@@ -688,7 +808,24 @@ def collect_events() -> dict[str, Any]:
     }
 
 
-def write_snapshot(snapshot: dict[str, Any]) -> dict[str, str]:
+def load_previous_snapshot() -> dict[str, Any] | None:
+    try:
+        response = S3.get_object(Bucket=BUCKET_NAME, Key="events/latest.json")
+    except S3.exceptions.NoSuchKey:
+        return None
+    except Exception as error:
+        if getattr(error, "response", {}).get("Error", {}).get("Code") in {
+            "NoSuchKey",
+            "404",
+        }:
+            return None
+        raise
+    return json.loads(response["Body"].read().decode("utf-8"))
+
+
+def write_snapshot(
+    snapshot: dict[str, Any], changes: dict[str, Any]
+) -> dict[str, str]:
     now = _now()
     body = json.dumps(snapshot, ensure_ascii=False, indent=2).encode("utf-8")
     timestamped_key = (
@@ -702,13 +839,26 @@ def write_snapshot(snapshot: dict[str, Any]) -> dict[str, str]:
             Body=body,
             ContentType="application/json",
         )
-    return {"latest": latest_key, "timestamped": timestamped_key}
+    changes_key = "events/changes/latest.json"
+    S3.put_object(
+        Bucket=BUCKET_NAME,
+        Key=changes_key,
+        Body=json.dumps(changes, ensure_ascii=False, indent=2).encode("utf-8"),
+        ContentType="application/json",
+    )
+    return {
+        "latest": latest_key,
+        "timestamped": timestamped_key,
+        "changes": changes_key,
+    }
 
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     started = time.monotonic()
+    previous = load_previous_snapshot()
     snapshot = collect_events()
-    keys = write_snapshot(snapshot)
+    changes = build_change_set(previous, snapshot)
+    keys = write_snapshot(snapshot, changes)
     result = {
         "success": True,
         "bucket": BUCKET_NAME,
@@ -716,6 +866,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         "event_count": snapshot["total_events"],
         "source_counts": snapshot["summary"]["by_source"],
         "source_failures": snapshot["summary"]["failures"],
+        "change_counts": changes["counts"],
         "duration_seconds": round(time.monotonic() - started, 2),
     }
     LOGGER.info("Collection complete: %s", json.dumps(result))

@@ -1,6 +1,6 @@
 # Migration checklist
 
-This checklist moves the legacy EC2/ECR workflow to two container-based Lambda
+This checklist moves the legacy EC2/ECR workflow to three container-based Lambda
 functions without changing the historical S3 data.
 
 ## Observed legacy state
@@ -57,7 +57,15 @@ functions without changing the historical S3 data.
 - [ ] Add retries for transient Lambda service failures.
 - [ ] Enable Step Functions logging after verifying the log group and IAM policy.
 - [ ] Run one manual execution and inspect every state.
-- [ ] Choose the intended schedule: daily or weekly Friday.
+- [ ] Set collector horizon to ten days.
+- [ ] Create and directly test the daily social Lambda.
+- [ ] Confirm one shared social artifact is used for both platforms.
+- [ ] Confirm the 48-hour cooldown excludes recently selected events.
+- [ ] Deploy timezone-aware daily collection and daily social schedules.
+- [ ] Deploy the Thursday preview and Friday refresh schedule.
+- [ ] Confirm Thursday writes a weekend baseline snapshot.
+- [ ] Confirm Friday compares with the Thursday baseline.
+- [ ] Disable, but initially retain, the old daily full-workflow rule.
 
 ## Rollback
 

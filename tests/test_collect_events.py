@@ -23,8 +23,53 @@ class CollectEventsTests(unittest.TestCase):
             MODULE.is_in_collection_window("2026-09-18", today=date(2026, 9, 17))
         )
         self.assertFalse(
-            MODULE.is_in_collection_window("2026-09-25", today=date(2026, 9, 17))
+            MODULE.is_in_collection_window("2026-09-29", today=date(2026, 9, 17))
         )
+
+    def test_change_set_tracks_new_updated_and_missing_without_cancelling(self):
+        previous = {
+            "timestamp": "2026-09-17T06:00:00-04:00",
+            "events": [
+                {
+                    "event_id": "same",
+                    "name": "Harbor Music",
+                    "date": "2026-09-19",
+                    "time": "18:00:00",
+                    "source": "Boston.gov",
+                    "link": "https://example.org/music",
+                },
+                {
+                    "event_id": "gone",
+                    "name": "Old Listing",
+                    "date": "2026-09-20",
+                    "source": "Boston.gov",
+                },
+            ],
+        }
+        current = {
+            "timestamp": "2026-09-18T06:00:00-04:00",
+            "events": [
+                {
+                    "event_id": "same",
+                    "name": "Harbor Music",
+                    "date": "2026-09-19",
+                    "time": "19:00:00",
+                    "source": "Boston.gov",
+                    "link": "https://example.org/music",
+                    "content_hash": "changed",
+                },
+                {
+                    "event_id": "new",
+                    "name": "New Festival",
+                    "date": "2026-09-20",
+                    "source": "Revere Community",
+                },
+            ],
+        }
+        changes = MODULE.build_change_set(previous, current)
+        self.assertEqual(changes["counts"], {"new": 1, "updated": 1, "missing": 1})
+        self.assertEqual(changes["updated"][0]["changes"]["time"]["after"], "19:00:00")
+        self.assertEqual(changes["missing"][0]["status"], "unconfirmed_missing")
 
     def test_parse_boston_gov_rss(self):
         rss = """<?xml version="1.0"?>

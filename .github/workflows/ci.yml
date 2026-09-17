@@ -22,5 +22,6 @@ jobs:
           pip install
           -r services/collect-events/requirements.txt
           -r services/langchain-report/requirements.txt
+          -r services/daily-social/requirements.txt
           boto3
       - run: python -m unittest discover -s tests -v

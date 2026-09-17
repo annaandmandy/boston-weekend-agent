@@ -62,6 +62,55 @@ class LangChainReportTests(unittest.TestCase):
             "Enjoy your weekend!",
         )
 
+    def test_report_edition_follows_thursday_and_friday(self):
+        eastern = ZoneInfo("America/New_York")
+        self.assertEqual(
+            MODULE.determine_edition(datetime(2026, 9, 17, 7, tzinfo=eastern)),
+            "thursday-preview",
+        )
+        self.assertEqual(
+            MODULE.determine_edition(datetime(2026, 9, 18, 7, tzinfo=eastern)),
+            "friday-update",
+        )
+
+    def test_missing_listing_is_explicitly_not_a_cancellation(self):
+        formatted = MODULE.format_event_changes(
+            {
+                "missing": [
+                    {"name": "Harbor Festival", "status": "unconfirmed_missing"}
+                ]
+            }
+        )
+        self.assertIn("do not call these cancelled", formatted)
+
+    def test_friday_compares_against_thursday_weekend_baseline(self):
+        baseline = {
+            "events": [
+                {
+                    "event_id": "music",
+                    "name": "Harbor Music",
+                    "date": "2026-09-19",
+                    "time": "18:00:00",
+                },
+                {"event_id": "missing", "name": "Old Event", "date": "2026-09-20"},
+            ]
+        }
+        current = {
+            "events": [
+                {
+                    "event_id": "music",
+                    "name": "Harbor Music",
+                    "date": "2026-09-19",
+                    "time": "19:00:00",
+                },
+                {"event_id": "new", "name": "New Event", "date": "2026-09-20"},
+            ]
+        }
+        changes = MODULE.compare_event_snapshots(baseline, current)
+        self.assertEqual(changes["updated"][0]["changes"]["time"]["after"], "19:00:00")
+        self.assertEqual(changes["new"][0]["name"], "New Event")
+        self.assertEqual(changes["missing"][0]["status"], "unconfirmed_missing")
+
 
 if __name__ == "__main__":
     unittest.main()

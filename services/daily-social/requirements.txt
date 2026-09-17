@@ -1,0 +1,5 @@
+langchain==0.3.9
+langchain-core==0.3.29
+langchain-openai==0.3.0
+openai==1.61.1
+tiktoken==0.7.0

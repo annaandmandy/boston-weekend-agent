@@ -8,21 +8,19 @@
       "Resource": "${OPENAI_SECRET_ARN}"
     },
     {
-      "Sid": "ReadPipelineInputs",
+      "Sid": "ReadSocialInputs",
       "Effect": "Allow",
       "Action": "s3:GetObject",
       "Resource": [
         "arn:aws:s3:::boston-weekend-agent-reports/events/latest.json",
-        "arn:aws:s3:::boston-weekend-agent-reports/events/changes/latest.json",
-        "arn:aws:s3:::boston-weekend-agent-reports/weather/summary.json",
-        "arn:aws:s3:::boston-weekend-agent-reports/reports/baselines/*"
+        "arn:aws:s3:::boston-weekend-agent-reports/social/history.json"
       ]
     },
     {
-      "Sid": "WriteReports",
+      "Sid": "WriteSocialContent",
       "Effect": "Allow",
       "Action": "s3:PutObject",
-      "Resource": "arn:aws:s3:::boston-weekend-agent-reports/reports/*"
+      "Resource": "arn:aws:s3:::boston-weekend-agent-reports/social/*"
     }
   ]
 }
