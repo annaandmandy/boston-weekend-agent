@@ -25,6 +25,7 @@ AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 BUCKET_NAME = os.environ.get("REPORT_BUCKET", "boston-weekend-agent-reports")
 DAYS_AHEAD = int(os.environ.get("DAYS_AHEAD", "3"))
 MAX_EVENTS_PER_SOURCE = int(os.environ.get("MAX_EVENTS_PER_SOURCE", "10"))
+MAX_CITY_EVENTS = int(os.environ.get("MAX_CITY_EVENTS", "30"))
 REQUEST_TIMEOUT_SECONDS = int(os.environ.get("REQUEST_TIMEOUT_SECONDS", "15"))
 MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "3"))
 
@@ -239,7 +240,7 @@ def parse_boston_gov_rss(
                 "link": link,
             }
         )
-        if len(events) >= MAX_EVENTS_PER_SOURCE:
+        if len(events) >= MAX_CITY_EVENTS:
             break
     return events
 

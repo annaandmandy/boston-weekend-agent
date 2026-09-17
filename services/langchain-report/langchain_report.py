@@ -105,10 +105,15 @@ def build_time_context(now: datetime) -> dict[str, Any]:
 
 
 def filter_and_prioritize_events(
-    events_data: dict[str, Any], now: datetime, days_ahead: int = 3
+    events_data: dict[str, Any], now: datetime
 ) -> list[dict[str, Any]]:
-    start = now.date()
-    end = start + timedelta(days=days_ahead)
+    today = now.date()
+    if today.weekday() >= 4:
+        start = today
+        end = today + timedelta(days=6 - today.weekday())
+    else:
+        start = today + timedelta(days=4 - today.weekday())
+        end = start + timedelta(days=2)
     selected = []
     for original in events_data.get("events", []):
         raw_date = original.get("date")
@@ -120,14 +125,24 @@ def filter_and_prioritize_events(
             continue
 
         event = dict(original)
-        offset = (event_date - start).days
+        offset = (event_date - today).days
         event["time_label"] = (
-            "TODAY" if offset == 0 else "TOMORROW" if offset == 1 else f"In {offset} days"
+            "TODAY"
+            if offset == 0
+            else "TOMORROW"
+            if offset == 1
+            else event_date.strftime("%A")
         )
         score = float(event.get("quality_score", 5))
         if "free" in str(event.get("price") or "").lower():
             score += 2
-        score += 3 if offset == 0 else 2 if offset == 1 else 0
+        event_text = " ".join(
+            str(event.get(field) or "") for field in ("name", "description", "category")
+        ).lower()
+        if any(term in event_text for term in ("festival", "fitness", "tour", "music", "dance")):
+            score += 2
+        if any(term in event_text for term in ("abutters meeting", "office hours", "public meeting")):
+            score -= 3
         event["priority_score"] = score
         selected.append(event)
     return sorted(selected, key=lambda item: item["priority_score"], reverse=True)
@@ -178,7 +193,8 @@ What's Happening
 One free option
 Insider Tip
 
-Use a friendly neighborly tone. Mention source uncertainty when event details are incomplete.""",
+Use a friendly neighborly tone. Mention source uncertainty when event details are incomplete.
+Return Markdown only. Do not wrap the report in JSON, quotes, or code fences.""",
             ),
             (
                 "human",
@@ -198,6 +214,15 @@ Upcoming events:
     )
 
 
+def normalize_report_text(content: Any) -> str:
+    report = str(content).strip()
+    if report.startswith('"') and report.endswith('"'):
+        report = report[1:-1].strip()
+    if report.endswith('"}'):
+        report = report[:-2].rstrip()
+    return report
+
+
 def generate_report(events_data: dict[str, Any], weather_data: dict[str, Any]) -> dict[str, Any]:
     from langchain_openai import ChatOpenAI
 
@@ -209,7 +234,7 @@ def generate_report(events_data: dict[str, Any], weather_data: dict[str, Any]) -
 
     model = ChatOpenAI(
         model=OPENAI_MODEL,
-        temperature=0.7,
+        temperature=0.4,
         api_key=get_openai_api_key(),
     )
     result = (build_prompt() | model).invoke(
@@ -223,8 +248,9 @@ def generate_report(events_data: dict[str, Any], weather_data: dict[str, Any]) -
             "events": format_events(events),
         }
     )
+    report = normalize_report_text(result.content)
     return {
-        "report": result.content,
+        "report": report,
         "generated_at": now.isoformat(),
         "events_count": len(events),
         "context": context,

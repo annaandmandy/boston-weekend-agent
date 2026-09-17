@@ -58,6 +58,7 @@ Create `collect_events_v2` as an x86_64 image Lambda. Configure:
 - `EVENTS_SECRET_ID`: full secret ARN
 - `REPORT_BUCKET`: `boston-weekend-agent-reports`
 - `MAX_EVENTS_PER_SOURCE`: `10`
+- `MAX_CITY_EVENTS`: `30`
 
 Attach the standard Lambda basic execution policy and the scoped statements in
 `infrastructure/iam/collect-events-policy.json` after replacing the placeholder.
