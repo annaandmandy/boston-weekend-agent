@@ -49,6 +49,154 @@ class CollectEventsTests(unittest.TestCase):
         self.assertEqual(event["location"], "Boston Common")
         self.assertEqual(event["price"], "Free")
 
+    def test_ticketmaster_geohash_has_expected_precision(self):
+        geohash = MODULE.encode_geohash(42.3601, -71.0589)
+        self.assertEqual(geohash, "drt2zp2")
+
+    def test_parse_ical_events_unfolds_and_filters_meetings(self):
+        calendar = """BEGIN:VCALENDAR\r
+BEGIN:VEVENT\r
+DESCRIPTION:Shop from local artists at this free event. https://example.org/\r
+ open-studios\r
+DTSTART:20260919T160000Z\r
+LOCATION:Central Square\r
+SUMMARY:Open Studios\r
+URL:/calendar/open-studios\r
+END:VEVENT\r
+BEGIN:VEVENT\r
+DTSTART;TZID=America/New_York:20260919T190000\r
+LOCATION:City Hall\r
+SUMMARY:Planning Board Meeting\r
+URL:/calendar/meeting\r
+END:VEVENT\r
+END:VCALENDAR\r
+"""
+        events = MODULE.parse_ical_events(
+            calendar,
+            source="Cambridge Arts",
+            city="Cambridge",
+            base_url="https://example.org",
+            today=date(2026, 9, 17),
+        )
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event["name"], "Open Studios")
+        self.assertEqual(event["date"], "2026-09-19")
+        self.assertEqual(event["time"], "12:00:00")
+        self.assertEqual(event["city"], "Cambridge")
+        self.assertEqual(event["link"], "https://example.org/open-studios")
+        self.assertEqual(event["price"], "Free")
+
+    def test_parse_revere_official_calendar(self):
+        html = """
+        <div class="CalendarFeed-event">
+          <div class="u-fontSizeH5">
+            <a href="/calendar/event/123">Revere Beach Sand Festival</a>
+          </div>
+          <div class="Arrange-sizeFill">September 19, 2026</div>
+          <div class="Arrange-sizeFill">11:00 AM to 3:00 PM</div>
+          <div class="Arrange-sizeFill">Revere Beach</div>
+        </div>
+        """
+        events = MODULE.parse_revere_events(html, today=date(2026, 9, 17))
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["date"], "2026-09-19")
+        self.assertEqual(events[0]["city"], "Revere")
+        self.assertEqual(
+            events[0]["link"], "https://www.revere.org/calendar/event/123"
+        )
+
+    def test_parse_discover_quincy_calendar(self):
+        html = """
+        <article class="mec-event-article">
+          <div class="mec-topsec">
+            <h3 class="mec-event-title">
+              <a href="https://discoverquincy.com/events/festival/">Fall Festival</a>
+            </h3>
+            <div class="mec-event-description">A free afternoon of music and food.</div>
+            <span class="mec-start-date-label">19 Sep</span>
+            <span class="mec-start-time">3:00 pm</span>
+            <span class="mec-end-time">7:00 pm</span>
+            <div class="mec-venue-details"><span>Kilroy Square</span>
+              <address class="mec-event-address">25 Cottage Avenue</address>
+            </div>
+            <div class="mec-event-image"><img src="https://example.org/event.jpg"></div>
+          </div>
+        </article>
+        """
+        events = MODULE.parse_quincy_events(html, today=date(2026, 9, 17))
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event["date"], "2026-09-19")
+        self.assertEqual(event["time"], "3:00 pm - 7:00 pm")
+        self.assertEqual(event["location"], "Kilroy Square")
+        self.assertEqual(event["price"], "Free")
+
+    def test_deduplicates_same_event_from_multiple_calendars(self):
+        common = {
+            "name": "Community Arts Festival",
+            "date": "2026-09-19",
+            "time": "12:00:00",
+            "category": "Community",
+            "price": None,
+            "image_url": None,
+        }
+        ranked = MODULE.deduplicate_and_rank(
+            [
+                {
+                    **common,
+                    "location": "Greater Boston",
+                    "address": None,
+                    "description": None,
+                    "source": "Calendar A",
+                    "link": "https://example.org/a",
+                },
+                {
+                    **common,
+                    "location": "Town Common",
+                    "address": "1 Main Street",
+                    "description": (
+                        "A free community festival with live music, local food, "
+                        "family activities, and art."
+                    ),
+                    "price": "Free",
+                    "source": "Calendar B",
+                    "link": "https://example.org/b",
+                },
+            ]
+        )
+        self.assertEqual(len(ranked), 1)
+        self.assertEqual(ranked[0]["source"], "Calendar B")
+
+    def test_global_ranking_excludes_government_meetings(self):
+        ranked = MODULE.deduplicate_and_rank(
+            [
+                {
+                    "name": "Neighborhood Abutters Meeting",
+                    "date": "2026-09-19",
+                    "time": "18:00:00",
+                    "location": "City Hall",
+                    "description": "Public discussion about a local project.",
+                    "price": "Free",
+                    "image_url": None,
+                    "source": "Official Calendar",
+                    "link": "https://example.org/meeting",
+                },
+                {
+                    "name": "Waterfront Music Festival",
+                    "date": "2026-09-19",
+                    "time": "12:00:00",
+                    "location": "The Park",
+                    "description": "Free music and food for the whole family by the water.",
+                    "price": "Free",
+                    "image_url": None,
+                    "source": "Official Calendar",
+                    "link": "https://example.org/festival",
+                },
+            ]
+        )
+        self.assertEqual([event["name"] for event in ranked], ["Waterfront Music Festival"])
+
 
 if __name__ == "__main__":
     unittest.main()

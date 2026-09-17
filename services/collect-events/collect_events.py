@@ -11,6 +11,7 @@ import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Any, Callable
+from urllib.parse import urljoin
 from zoneinfo import ZoneInfo
 
 import boto3
@@ -26,6 +27,7 @@ BUCKET_NAME = os.environ.get("REPORT_BUCKET", "boston-weekend-agent-reports")
 DAYS_AHEAD = int(os.environ.get("DAYS_AHEAD", "3"))
 MAX_EVENTS_PER_SOURCE = int(os.environ.get("MAX_EVENTS_PER_SOURCE", "10"))
 MAX_CITY_EVENTS = int(os.environ.get("MAX_CITY_EVENTS", "30"))
+TICKETMASTER_RADIUS_MILES = int(os.environ.get("TICKETMASTER_RADIUS_MILES", "25"))
 REQUEST_TIMEOUT_SECONDS = int(os.environ.get("REQUEST_TIMEOUT_SECONDS", "15"))
 MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "3"))
 
@@ -40,6 +42,55 @@ HEADERS = {
     ),
     "Accept-Language": "en-US,en;q=0.9",
 }
+
+BOSTON_LATITUDE = 42.3601
+BOSTON_LONGITUDE = -71.0589
+
+# Official, structured community calendars. CivicPlus feeds use the same
+# iCalendar format, so additional nearby towns can be added without another
+# scraper.
+ICAL_SOURCES = (
+    {
+        "name": "Cambridge Arts",
+        "city": "Cambridge",
+        "url": "https://www.cambridgema.gov/arts/Calendar.ics",
+        "base_url": "https://www.cambridgema.gov",
+    },
+    {
+        "name": "Malden Community",
+        "city": "Malden",
+        "url": (
+            "https://www.cityofmalden.org/common/modules/iCalendar/"
+            "iCalendar.aspx?catID=14&feed=calendar"
+        ),
+        "base_url": "https://www.cityofmalden.org",
+    },
+    {
+        "name": "Natick Community",
+        "city": "Natick",
+        "url": (
+            "https://natickma.gov/common/modules/iCalendar/"
+            "iCalendar.aspx?catID=117&feed=calendar"
+        ),
+        "base_url": "https://natickma.gov",
+    },
+    {
+        "name": "Brookline Community",
+        "city": "Brookline",
+        "url": (
+            "https://www.brooklinema.gov/common/modules/iCalendar/"
+            "iCalendar.aspx?catID=107&feed=calendar"
+        ),
+        "base_url": "https://www.brooklinema.gov",
+    },
+)
+
+NON_LEISURE_PATTERN = re.compile(
+    r"\b(?:board|commission|committee|council|meeting|public hearing|"
+    r"town meeting|office hours|caucus|licensing|zoning|planning meeting|"
+    r"flu clinic|vaccination clinic|closed|closure)\b",
+    re.IGNORECASE,
+)
 
 
 def _now() -> datetime:
@@ -127,6 +178,34 @@ def calculate_event_score(event: dict[str, Any]) -> float:
     return score
 
 
+def encode_geohash(latitude: float, longitude: float, precision: int = 7) -> str:
+    """Encode coordinates for Ticketmaster's preferred geoPoint parameter."""
+    alphabet = "0123456789bcdefghjkmnpqrstuvwxyz"
+    latitude_range = [-90.0, 90.0]
+    longitude_range = [-180.0, 180.0]
+    bits = (16, 8, 4, 2, 1)
+    result: list[str] = []
+    value = bit_index = 0
+    use_longitude = True
+
+    while len(result) < precision:
+        bounds = longitude_range if use_longitude else latitude_range
+        coordinate = longitude if use_longitude else latitude
+        midpoint = (bounds[0] + bounds[1]) / 2
+        if coordinate >= midpoint:
+            value |= bits[bit_index]
+            bounds[0] = midpoint
+        else:
+            bounds[1] = midpoint
+        use_longitude = not use_longitude
+        if bit_index < 4:
+            bit_index += 1
+        else:
+            result.append(alphabet[value])
+            bit_index = value = 0
+    return "".join(result)
+
+
 def fetch_ticketmaster_events() -> list[dict[str, Any]]:
     LOGGER.info("Fetching Ticketmaster events")
     api_key = get_api_credentials()["TICKETMASTER_API_KEY"]
@@ -136,8 +215,10 @@ def fetch_ticketmaster_events() -> list[dict[str, Any]]:
             "https://app.ticketmaster.com/discovery/v2/events.json",
             params={
                 "apikey": api_key,
-                "city": "Boston",
-                "stateCode": "MA",
+                "geoPoint": encode_geohash(BOSTON_LATITUDE, BOSTON_LONGITUDE),
+                "radius": TICKETMASTER_RADIUS_MILES,
+                "unit": "miles",
+                "countryCode": "US",
                 "size": MAX_EVENTS_PER_SOURCE,
                 "sort": "date,asc",
                 "startDateTime": now_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -167,6 +248,7 @@ def fetch_ticketmaster_events() -> list[dict[str, Any]]:
                 "time": raw.get("dates", {}).get("start", {}).get("localTime"),
                 "location": venue.get("name") or "Boston, MA",
                 "address": venue.get("address", {}).get("line1"),
+                "city": venue.get("city", {}).get("name") or "Boston",
                 "category": (
                     raw.get("classifications", [{}])[0]
                     .get("segment", {})
@@ -180,6 +262,292 @@ def fetch_ticketmaster_events() -> list[dict[str, Any]]:
             }
         )
     LOGGER.info("Ticketmaster returned %s events", len(events))
+    return events
+
+
+def _unfold_ical_lines(text: str) -> list[str]:
+    """Join RFC 5545 folded lines before parsing individual properties."""
+    unfolded: list[str] = []
+    for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        if line.startswith((" ", "\t")) and unfolded:
+            unfolded[-1] += line[1:]
+        else:
+            unfolded.append(line)
+    return unfolded
+
+
+def _unescape_ical(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return clean_text(
+        value.replace("\\n", " ")
+        .replace("\\N", " ")
+        .replace("\\,", ",")
+        .replace("\\;", ";")
+        .replace("\\\\", "\\")
+    )
+
+
+def _parse_ical_start(value: str | None) -> tuple[str | None, str | None]:
+    if not value:
+        return None, None
+    raw = value.strip()
+    try:
+        if len(raw) == 8:
+            parsed = datetime.strptime(raw, "%Y%m%d")
+            return parsed.date().isoformat(), None
+        if raw.endswith("Z"):
+            parsed = datetime.strptime(raw, "%Y%m%dT%H%M%SZ").replace(
+                tzinfo=timezone.utc
+            )
+            local = parsed.astimezone(EASTERN)
+        else:
+            local = datetime.strptime(raw[:15], "%Y%m%dT%H%M%S").replace(
+                tzinfo=EASTERN
+            )
+        return local.date().isoformat(), local.strftime("%H:%M:%S")
+    except ValueError:
+        return None, None
+
+
+def parse_ical_events(
+    text: str,
+    *,
+    source: str,
+    city: str,
+    base_url: str,
+    today: date | None = None,
+) -> list[dict[str, Any]]:
+    """Normalize events from an official iCalendar feed."""
+    events: list[dict[str, Any]] = []
+    current: dict[str, str] | None = None
+    for line in _unfold_ical_lines(text):
+        if line == "BEGIN:VEVENT":
+            current = {}
+            continue
+        if line == "END:VEVENT" and current is not None:
+            event_date, event_time = _parse_ical_start(current.get("DTSTART"))
+            title = _unescape_ical(current.get("SUMMARY"))
+            description = _unescape_ical(current.get("DESCRIPTION"))
+            if (
+                title
+                and is_in_collection_window(event_date, today=today)
+                and not NON_LEISURE_PATTERN.search(title)
+            ):
+                raw_url = current.get("URL") or ""
+                description_url = re.search(r"https?://[^\s]+", description or "")
+                link = (
+                    description_url.group(0).rstrip(".,)")
+                    if description_url
+                    else urljoin(base_url, raw_url)
+                )
+                location = _unescape_ical(current.get("LOCATION"))
+                location = re.sub(r"^\s*-\s*", "", location or "") or f"{city}, MA"
+                events.append(
+                    {
+                        "name": title,
+                        "date": event_date,
+                        "time": event_time,
+                        "location": location,
+                        "address": location,
+                        "city": city,
+                        "category": "Community",
+                        "price": "Free"
+                        if re.search(r"\bfree\b", description or "", re.IGNORECASE)
+                        else None,
+                        "description": description,
+                        "image_url": None,
+                        "source": source,
+                        "link": link,
+                    }
+                )
+            current = None
+            if len(events) >= MAX_CITY_EVENTS:
+                break
+            continue
+        if current is None or ":" not in line:
+            continue
+        key_with_params, value = line.split(":", 1)
+        key = key_with_params.split(";", 1)[0]
+        if key in {"SUMMARY", "DESCRIPTION", "DTSTART", "LOCATION", "URL"}:
+            current[key] = value
+    return events
+
+
+def fetch_ical_events(config: dict[str, str]) -> list[dict[str, Any]]:
+    LOGGER.info("Fetching %s events", config["name"])
+    response = request_with_retry(
+        lambda: requests.get(
+            config["url"], headers=HEADERS, timeout=REQUEST_TIMEOUT_SECONDS
+        ),
+        source=config["name"],
+    )
+    events = parse_ical_events(
+        response.text,
+        source=config["name"],
+        city=config["city"],
+        base_url=config["base_url"],
+    )
+    LOGGER.info("%s returned %s relevant events", config["name"], len(events))
+    return events
+
+
+def parse_revere_events(
+    html: str, *, today: date | None = None
+) -> list[dict[str, Any]]:
+    """Normalize leisure events from the City of Revere official calendar."""
+    soup = BeautifulSoup(html, "html.parser")
+    events: list[dict[str, Any]] = []
+    for card in soup.select(".CalendarFeed-event"):
+        link_node = card.select_one(".u-fontSizeH5 a[href]")
+        details = [
+            clean_text(node.get_text(" ", strip=True))
+            for node in card.select(".Arrange-sizeFill")
+        ]
+        details = [detail for detail in details if detail]
+        if not link_node or len(details) < 2:
+            continue
+        title = clean_text(link_node.get_text(" ", strip=True))
+        event_date = None
+        for detail in details:
+            parsed_date = parse_event_date(detail)
+            if parsed_date:
+                event_date = parsed_date.isoformat()
+                break
+        if (
+            not title
+            or not is_in_collection_window(event_date, today=today)
+            or NON_LEISURE_PATTERN.search(title)
+        ):
+            continue
+        event_time = next((value for value in details if re.search(r"\d:\d{2}", value)), None)
+        location = details[-1] if len(details) >= 3 else "Revere, MA"
+        events.append(
+            {
+                "name": title,
+                "date": event_date,
+                "time": event_time,
+                "location": location,
+                "address": location,
+                "city": "Revere",
+                "category": "Community",
+                "price": None,
+                "description": None,
+                "image_url": None,
+                "source": "Revere Community",
+                "link": urljoin("https://www.revere.org", link_node["href"]),
+            }
+        )
+    return events[:MAX_CITY_EVENTS]
+
+
+def fetch_revere_events() -> list[dict[str, Any]]:
+    LOGGER.info("Fetching City of Revere events")
+    response = request_with_retry(
+        lambda: requests.get(
+            "https://www.revere.org/calendar/category/events",
+            headers=HEADERS,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        ),
+        source="Revere Community",
+    )
+    events = parse_revere_events(response.text)
+    LOGGER.info("Revere Community returned %s relevant events", len(events))
+    return events
+
+
+def parse_quincy_events(
+    html: str, *, today: date | None = None
+) -> list[dict[str, Any]]:
+    """Normalize Discover Quincy, the city's visitor event calendar."""
+    soup = BeautifulSoup(html, "html.parser")
+    events: list[dict[str, Any]] = []
+    reference_date = today or _now().date()
+    for card in soup.select("article.mec-event-article"):
+        top_section = card.find("div", class_="mec-topsec", recursive=False)
+        if top_section is None:
+            continue
+        link_node = top_section.select_one(".mec-event-title a[href]")
+        date_node = top_section.select_one(".mec-start-date-label")
+        if not link_node or not date_node:
+            continue
+        title = clean_text(link_node.get_text(" ", strip=True))
+        date_label = clean_text(date_node.get_text(" ", strip=True))
+        event_date = None
+        if date_label:
+            for year in (reference_date.year, reference_date.year + 1):
+                try:
+                    candidate = datetime.strptime(
+                        f"{date_label} {year}", "%d %b %Y"
+                    ).date()
+                    if candidate >= reference_date - timedelta(days=7):
+                        event_date = candidate.isoformat()
+                        break
+                except ValueError:
+                    continue
+        if (
+            not title
+            or title.startswith("Item detailsDate Name")
+            or not is_in_collection_window(event_date, today=reference_date)
+            or NON_LEISURE_PATTERN.search(title)
+        ):
+            continue
+
+        start_time = top_section.select_one(".mec-start-time")
+        end_time = top_section.select_one(".mec-end-time")
+        time_parts = [
+            clean_text(node.get_text(" ", strip=True))
+            for node in (start_time, end_time)
+            if node
+        ]
+        venue_node = top_section.select_one(".mec-venue-details > span")
+        address_node = top_section.select_one(".mec-event-address")
+        description_node = top_section.select_one(".mec-event-description")
+        image_node = top_section.select_one(".mec-event-image img[src]")
+        venue = clean_text(venue_node.get_text(" ", strip=True)) if venue_node else None
+        address = (
+            clean_text(address_node.get_text(" ", strip=True))
+            if address_node
+            else None
+        )
+        description = (
+            clean_text(description_node.get_text(" ", strip=True))
+            if description_node
+            else None
+        )
+        events.append(
+            {
+                "name": title,
+                "date": event_date,
+                "time": " - ".join(time_parts) or None,
+                "location": venue or "Quincy, MA",
+                "address": address,
+                "city": "Quincy",
+                "category": "Community",
+                "price": "Free"
+                if re.search(r"\bfree\b", description or "", re.IGNORECASE)
+                else None,
+                "description": description,
+                "image_url": image_node["src"] if image_node else None,
+                "source": "Discover Quincy",
+                "link": link_node["href"],
+            }
+        )
+    return events[:MAX_CITY_EVENTS]
+
+
+def fetch_quincy_events() -> list[dict[str, Any]]:
+    LOGGER.info("Fetching Discover Quincy events")
+    response = request_with_retry(
+        lambda: requests.get(
+            "https://discoverquincy.com/event-calendar/",
+            headers=HEADERS,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        ),
+        source="Discover Quincy",
+    )
+    events = parse_quincy_events(response.text)
+    LOGGER.info("Discover Quincy returned %s relevant events", len(events))
     return events
 
 
@@ -230,6 +598,7 @@ def parse_boston_gov_rss(
                 "time": event_time,
                 "location": location,
                 "address": address,
+                "city": "Boston",
                 "category": "Community",
                 "price": "Free"
                 if re.search(r"\bfree\b", description_html, re.IGNORECASE)
@@ -261,13 +630,14 @@ def fetch_boston_gov_events() -> list[dict[str, Any]]:
 
 
 def deduplicate_and_rank(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    unique: dict[tuple[str, str, str], dict[str, Any]] = {}
+    unique: dict[tuple[str, str], dict[str, Any]] = {}
     for event in events:
+        if NON_LEISURE_PATTERN.search(event.get("name") or ""):
+            continue
         event["quality_score"] = calculate_event_score(event)
         key = (
             (event.get("name") or "").lower().strip(),
             event.get("date") or "unknown",
-            (event.get("location") or "").lower().strip()[:40],
         )
         if key not in unique or event["quality_score"] > unique[key]["quality_score"]:
             unique[key] = event
@@ -278,10 +648,19 @@ def deduplicate_and_rank(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def collect_events() -> dict[str, Any]:
-    sources = (
+    sources: list[tuple[str, Callable[[], list[dict[str, Any]]]]] = [
         ("Ticketmaster", fetch_ticketmaster_events),
         ("Boston.gov", fetch_boston_gov_events),
-    )
+        ("Revere Community", fetch_revere_events),
+        ("Discover Quincy", fetch_quincy_events),
+    ]
+    for config in ICAL_SOURCES:
+        sources.append(
+            (
+                config["name"],
+                lambda config=config: fetch_ical_events(config),
+            )
+        )
     collected = []
     failures = []
     for name, fetcher in sources:

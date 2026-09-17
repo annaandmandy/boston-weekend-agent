@@ -21,8 +21,10 @@ EventBridge Scheduler
 AWS Step Functions
         |
         +--> Event collector Lambda
-        |      +-- Ticketmaster API
+        |      +-- Ticketmaster Greater Boston radius search
         |      +-- City of Boston events RSS
+        |      +-- Official municipal iCalendar feeds
+        |      +-- Revere and Discover Quincy calendars
         |      +-- Secrets Manager
         |      `-- S3 events/latest.json
         |
@@ -45,6 +47,7 @@ infrastructure/
   step-functions/       Target state-machine definition
 docs/
   deployment.md         Manual deployment and verification procedure
+  event-sources.md       Active and candidate Greater Boston sources
   migration-checklist.md
 tests/                  Offline parser and prioritization tests
 ```
@@ -96,7 +99,8 @@ tests each Lambda independently before changing the production state machine.
 
 - Provider failures are isolated so one unavailable source does not discard
   usable events from other sources.
-- City of Boston events come from the City's official public RSS feed.
+- Community events come from official or city-affiliated calendars across
+  Greater Boston. See [`docs/event-sources.md`](docs/event-sources.md).
 - Event and report snapshots are timestamped while stable `latest` keys support
   the website.
 - The report Lambda reads source data directly from S3, keeping Step Functions
