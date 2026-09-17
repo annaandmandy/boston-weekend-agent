@@ -1,0 +1,72 @@
+{
+  "Comment": "Boston Weekend Travel Mood Agent workflow",
+  "StartAt": "CollectEvents",
+  "States": {
+    "CollectEvents": {
+      "Type": "Task",
+      "Resource": "${CollectEventsFunctionArn}",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Next": "CollectTravelData"
+    },
+    "CollectTravelData": {
+      "Type": "Task",
+      "Resource": "${CollectTravelDataFunctionArn}",
+      "Next": "CollectWeather"
+    },
+    "CollectWeather": {
+      "Type": "Task",
+      "Resource": "${CollectWeatherFunctionArn}",
+      "Next": "UploadWeatherToS3"
+    },
+    "UploadWeatherToS3": {
+      "Type": "Task",
+      "Resource": "${UploadWeatherFunctionArn}",
+      "Next": "WeatherSummary"
+    },
+    "WeatherSummary": {
+      "Type": "Task",
+      "Resource": "${WeatherSummaryFunctionArn}",
+      "Next": "UploadSummaryToS3"
+    },
+    "UploadSummaryToS3": {
+      "Type": "Task",
+      "Resource": "${UploadSummaryFunctionArn}",
+      "Next": "SentimentAnalysis"
+    },
+    "SentimentAnalysis": {
+      "Type": "Task",
+      "Resource": "${SentimentAnalysisFunctionArn}",
+      "Next": "LangChainReport"
+    },
+    "LangChainReport": {
+      "Type": "Task",
+      "Resource": "${LangChainReportFunctionArn}",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "Lambda.ServiceException",
+            "Lambda.AWSLambdaException",
+            "Lambda.SdkClientException",
+            "States.Timeout"
+          ],
+          "IntervalSeconds": 2,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "End": true
+    }
+  }
+}

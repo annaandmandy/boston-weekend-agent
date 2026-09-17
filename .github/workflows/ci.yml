@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      AWS_EC2_METADATA_DISABLED: "true"
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: >-
+          pip install
+          -r services/collect-events/requirements.txt
+          -r services/langchain-report/requirements.txt
+          boto3
+      - run: python -m unittest discover -s tests -v

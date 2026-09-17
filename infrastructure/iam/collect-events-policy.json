@@ -1,0 +1,17 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadEventProviderSecret",
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "${EVENTS_SECRET_ARN}"
+    },
+    {
+      "Sid": "WriteEventSnapshots",
+      "Effect": "Allow",
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::boston-weekend-agent-reports/events/*"
+    }
+  ]
+}
