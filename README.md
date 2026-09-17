@@ -76,10 +76,10 @@ python -m unittest discover -s tests -v
 Build both Linux images without publishing them:
 
 ```bash
-docker buildx build --platform linux/amd64 --load \
+docker buildx build --platform linux/amd64 --provenance=false --load \
   -t boston-weekend-events:local services/collect-events
 
-docker buildx build --platform linux/amd64 --load \
+docker buildx build --platform linux/amd64 --provenance=false --load \
   -t boston-weekend-langchain:local services/langchain-report
 ```
 

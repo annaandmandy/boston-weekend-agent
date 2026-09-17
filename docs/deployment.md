@@ -1,12 +1,12 @@
 # Deployment guide
 
-Examples use the named AWS CLI profile `boston-personal` and `us-east-1`.
+Examples use the named AWS CLI profile `boston-deployer` and `us-east-1`.
 Perform deployments with a non-root identity.
 
 ## Prerequisites
 
 ```bash
-/opt/homebrew/bin/aws sts get-caller-identity --profile boston-personal
+/opt/homebrew/bin/aws sts get-caller-identity --profile boston-deployer
 docker version
 ```
 
@@ -17,7 +17,8 @@ machine and S3 bucket. Docker Desktop must be running.
 
 ```bash
 cd services/collect-events
-docker buildx build --platform linux/amd64 --load -t boston-weekend-events:v1 .
+docker buildx build --platform linux/amd64 --provenance=false --load \
+  -t boston-weekend-events:v1 .
 ```
 
 Create the ECR repository once:
@@ -28,7 +29,7 @@ Create the ECR repository once:
   --image-tag-mutability IMMUTABLE \
   --image-scanning-configuration scanOnPush=true \
   --region us-east-1 \
-  --profile boston-personal
+  --profile boston-deployer
 ```
 
 Authenticate Docker without placing a password in a command argument:
@@ -36,7 +37,7 @@ Authenticate Docker without placing a password in a command argument:
 ```bash
 /opt/homebrew/bin/aws ecr get-login-password \
   --region us-east-1 \
-  --profile boston-personal \
+  --profile boston-deployer \
 | docker login \
   --username AWS \
   --password-stdin ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com
@@ -65,7 +66,8 @@ Attach the standard Lambda basic execution policy and the scoped statements in
 
 ```bash
 cd services/langchain-report
-docker buildx build --platform linux/amd64 --load -t boston-weekend-langchain:v1 .
+docker buildx build --platform linux/amd64 --provenance=false --load \
+  -t boston-weekend-langchain:v1 .
 ```
 
 Create an immutable, scan-on-push ECR repository named
