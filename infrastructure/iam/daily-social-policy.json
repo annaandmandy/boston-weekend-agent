@@ -28,6 +28,17 @@
       }
     },
     {
+      "Sid": "FindThreadPublicationState",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::boston-weekend-agent-reports",
+      "Condition": {
+        "StringLike": {
+          "s3:prefix": "social/publications/threads/*"
+        }
+      }
+    },
+    {
       "Sid": "ReadSocialInputs",
       "Effect": "Allow",
       "Action": "s3:GetObject",
