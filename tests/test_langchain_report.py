@@ -23,13 +23,16 @@ class LangChainReportTests(unittest.TestCase):
     def test_weekend_prompt_is_bilingual_bobo_letter(self):
         prompt_text = str(MODULE.build_prompt())
         self.assertIn("波波 Bo", prompt_text)
-        self.assertIn("Traditional Chinese version comes first", prompt_text)
+        self.assertIn("natural Taiwan Traditional", prompt_text)
         self.assertIn("700-1000 Traditional Chinese characters", prompt_text)
         self.assertIn("450-650 English words", prompt_text)
         self.assertIn("weekend letter", prompt_text)
         self.assertIn("repetitive numbered list", prompt_text)
         self.assertIn("Write them as raw URLs", prompt_text)
         self.assertIn("Do not invent or", prompt_text)
+        self.assertIn("temperatures only in °C", prompt_text)
+        self.assertIn("temperatures only in °F", prompt_text)
+        self.assertIn('"zh"', prompt_text)
 
     def test_daily_and_weekend_persona_files_match(self):
         daily_persona_path = (
@@ -74,6 +77,61 @@ class LangChainReportTests(unittest.TestCase):
         self.assertNotIn("☀️", rendered)
         self.assertTrue(rendered.startswith("⌖ˎˊ˗ 〔✦ᴗ✦〕ノ"))
         self.assertTrue(rendered.endswith("— 波波 ⌖ˎˊ˗ 〔•ᴗ•〕ゞ"))
+
+    def test_parses_independent_language_reports(self):
+        parsed = MODULE.parse_bilingual_report(
+            __import__("json").dumps(
+                {
+                    "zh": {"title": "週末來信", "body": "氣溫 20°C。"},
+                    "en": {"title": "Weekend Letter", "body": "It is 68°F."},
+                }
+            )
+        )
+        self.assertEqual(parsed["zh"]["title"], "週末來信")
+        self.assertEqual(parsed["en"]["body"], "It is 68°F.")
+
+    def test_converts_celsius_weather_text_to_fahrenheit(self):
+        self.assertEqual(
+            MODULE.fahrenheit_temperature_text("16.4°C (13.7-20.8°C)"),
+            "61.5°F (56.7-69.4°F)",
+        )
+
+    def test_store_report_writes_localized_json(self):
+        original_s3 = MODULE.S3
+        mock_s3 = MagicMock()
+        MODULE.S3 = mock_s3
+        now = datetime(2026, 9, 18, 7, tzinfo=ZoneInfo("America/New_York"))
+        result = {
+            "report": "legacy combined report",
+            "generated_at": now.isoformat(),
+            "edition": "friday-update",
+            "languages": {
+                "zh": {
+                    "locale": "zh-TW",
+                    "temperature_unit": "C",
+                    "markdown": "氣溫 20°C",
+                },
+                "en": {
+                    "locale": "en-US",
+                    "temperature_unit": "F",
+                    "markdown": "Temperature 68°F",
+                },
+            },
+        }
+        try:
+            keys = MODULE.store_report(result, now)
+        finally:
+            MODULE.S3 = original_s3
+
+        self.assertEqual(keys["latest_json"], "reports/weekend_summary.json")
+        latest_json_call = next(
+            call
+            for call in mock_s3.put_object.call_args_list
+            if call.kwargs["Key"] == "reports/weekend_summary.json"
+        )
+        payload = __import__("json").loads(latest_json_call.kwargs["Body"])
+        self.assertEqual(payload["languages"]["zh"]["temperature_unit"], "C")
+        self.assertEqual(payload["languages"]["en"]["temperature_unit"], "F")
 
     def test_luna_uses_reasoning_effort_without_temperature(self):
         original_model = MODULE.OPENAI_MODEL

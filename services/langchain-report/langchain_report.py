@@ -654,11 +654,11 @@ update, naturally call out material new or changed listings and refreshed
 weather. Never describe an event as cancelled merely because it is listed as
 unconfirmed missing.
 
-Write a generous bilingual weekend letter, not a database summary or a tourism
-brochure. The Traditional Chinese version comes first and uses natural Taiwan
-wording; the English version follows after a line containing exactly
-`—— English ——`. Both languages must contain the same event facts and links,
-although the English should be a natural adaptation rather than a literal
+Write two independent versions of a generous bilingual weekend letter, not a
+database summary or a tourism brochure. `zh` must use natural Taiwan Traditional
+Chinese and temperatures only in °C. `en` must use natural English and
+temperatures only in °F. Both languages must contain the same event facts and
+links, although the English should be a natural adaptation rather than a literal
 translation. Never use Simplified Chinese.
 
 Aim for 700-1000 Traditional Chinese characters and 450-650 English words when
@@ -679,16 +679,28 @@ claim must stay grounded in the supplied data. Mention source uncertainty when
 details are incomplete. Do not output emoji, kaomoji, or a signature; the
 application adds Bo's expression and signoff deterministically.
 
-Return Markdown only. Do not wrap the report in JSON, quotes, or code fences.""",
+Return strict JSON only, without code fences:
+{{"zh":{{"title":"...","body":"Markdown..."}},
+"en":{{"title":"...","body":"Markdown..."}}}}
+
+Keep the title separate from the Markdown body. Do not add a language divider,
+emoji, kaomoji, or signature; the application renders each language separately
+and adds Bo's identity deterministically.""",
             ),
             (
                 "human",
                 """Generate this week's Boston weekend report.
 
-Weather:
+Weather for the Traditional Chinese version:
 - Best outdoor day: {best_day}
 - Best time: {best_time}
-- Temperature: {temperature}
+- Temperature: {temperature_zh}
+- Rain chance: {rain_chance}
+
+Weather for the English version:
+- Best outdoor day: {best_day}
+- Best time: {best_time}
+- Temperature: {temperature_en}
 - Rain chance: {rain_chance}
 
 Upcoming events:
@@ -709,6 +721,38 @@ def normalize_report_text(content: Any) -> str:
     if report.endswith('"}'):
         report = report[:-2].rstrip()
     return report
+
+
+def fahrenheit_temperature_text(value: Any) -> str:
+    text = str(value or "Unknown")
+    if "°C" not in text:
+        return text
+
+    def convert(match: re.Match[str]) -> str:
+        fahrenheit = float(match.group(1)) * 9 / 5 + 32
+        return f"{fahrenheit:.1f}"
+
+    return re.sub(r"((?<![\d.])-?\d+(?:\.\d+)?)", convert, text).replace(
+        "°C", "°F"
+    )
+
+
+def parse_bilingual_report(content: Any) -> dict[str, dict[str, str]]:
+    text = re.sub(
+        r"^```(?:json)?\s*|\s*```$", "", str(content).strip(), flags=re.I
+    )
+    payload = json.loads(text)
+    parsed: dict[str, dict[str, str]] = {}
+    for language in ("zh", "en"):
+        section = payload.get(language)
+        if not isinstance(section, dict):
+            raise ValueError(f"Report response is missing {language}")
+        title = str(section.get("title") or "").strip()
+        body = str(section.get("body") or "").strip()
+        if not title or not body:
+            raise ValueError(f"Report response has incomplete {language} content")
+        parsed[language] = {"title": title, "body": body}
+    return parsed
 
 
 def select_report_kaomoji(events: list[dict[str, Any]], now: datetime) -> str:
@@ -734,6 +778,17 @@ def finalize_report_text(content: Any, mood_kaomoji: str) -> str:
     signoff = persona["signoff"]
     report = report.replace(signoff, "").strip()
     return f"{mood_kaomoji}\n\n{report}\n\n{signoff}"
+
+
+def finalize_language_report(
+    section: dict[str, str], mood_kaomoji: str
+) -> str:
+    persona = load_persona()
+    title = EMOJI_PATTERN.sub("", section["title"]).strip()
+    body = EMOJI_PATTERN.sub("", section["body"]).strip()
+    signoff = persona["signoff"]
+    body = body.replace(signoff, "").strip()
+    return f"{mood_kaomoji}\n\n**{title}**\n\n{body}\n\n{signoff}"
 
 
 def generate_report(
@@ -763,14 +818,20 @@ def generate_report(
             "holiday_context": ", ".join(context["holidays"]) or "None",
             "best_day": top_pick.get("date", "Unknown"),
             "best_time": top_pick.get("time_window", "Unknown"),
-            "temperature": top_pick.get("temperature", "Unknown"),
+            "temperature_zh": top_pick.get("temperature", "Unknown"),
+            "temperature_en": fahrenheit_temperature_text(
+                top_pick.get("temperature", "Unknown")
+            ),
             "rain_chance": top_pick.get("rain_chance", "Unknown"),
             "events": format_events(events),
             "event_changes": format_event_changes(changes_data or {}),
         }
     )
     mood_kaomoji = select_report_kaomoji(events, now)
-    report = finalize_report_text(result.content, mood_kaomoji)
+    parsed_report = parse_bilingual_report(result.content)
+    report_zh = finalize_language_report(parsed_report["zh"], mood_kaomoji)
+    report_en = finalize_language_report(parsed_report["en"], mood_kaomoji)
+    report = f"{report_zh}\n\n—— English ——\n\n{report_en}"
     usage_metadata = getattr(result, "usage_metadata", None)
     if not usage_metadata:
         usage_metadata = getattr(result, "response_metadata", {}).get(
@@ -778,6 +839,18 @@ def generate_report(
         )
     return {
         "report": report,
+        "languages": {
+            "zh": {
+                "locale": "zh-TW",
+                "temperature_unit": "C",
+                "markdown": report_zh,
+            },
+            "en": {
+                "locale": "en-US",
+                "temperature_unit": "F",
+                "markdown": report_en,
+            },
+        },
         "generated_at": now.isoformat(),
         "events_count": len(events),
         "edition": edition,
@@ -819,10 +892,35 @@ def store_report(result: dict[str, Any], now: datetime) -> dict[str, str]:
             Body=body,
             ContentType="text/plain; charset=utf-8",
         )
+    json_payload = {
+        "schema_version": 1,
+        "generated_at": result["generated_at"],
+        "edition": result["edition"],
+        "languages": result["languages"],
+    }
+    json_body = json.dumps(json_payload, ensure_ascii=False, indent=2).encode("utf-8")
+    timestamped_json_key = (
+        f"reports/{now:%Y-%m}/report_{now:%Y%m%d_%H%M%S}.json"
+    )
+    archive_json_key = (
+        f"reports/archive/{now:%Y/%m}/"
+        f"{now:%Y-%m-%d}_{result['edition']}.json"
+    )
+    latest_json_key = "reports/weekend_summary.json"
+    for key in (timestamped_json_key, archive_json_key, latest_json_key):
+        S3.put_object(
+            Bucket=BUCKET_NAME,
+            Key=key,
+            Body=json_body,
+            ContentType="application/json; charset=utf-8",
+        )
     return {
         "latest": latest_key,
         "timestamped": timestamped_key,
         "archive": archive_key,
+        "latest_json": latest_json_key,
+        "timestamped_json": timestamped_json_key,
+        "archive_json": archive_json_key,
     }
 
 
