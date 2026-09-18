@@ -752,13 +752,13 @@ def generate_content(
         }
     )
     responses = [response]
-    content = parse_model_json(response.content)
     try:
+        content = parse_model_json(response.content)
         validate_contextual_kaomoji(content)
-    except ValueError as error:
-        LOGGER.warning("Retrying social voice contract: %s", error)
+    except (ValueError, json.JSONDecodeError) as error:
+        LOGGER.warning("Retrying social format/voice contract: %s", error)
         repaired = (build_kaomoji_repair_prompt() | model).invoke(
-            {"draft_json": json.dumps(content, ensure_ascii=False)}
+            {"draft_json": str(response.content)}
         )
         responses.append(repaired)
         content = parse_model_json(repaired.content)
