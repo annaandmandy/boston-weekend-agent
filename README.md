@@ -41,7 +41,8 @@ Daily social Lambda
         +-- Reads the same normalized event snapshot
         +-- Enforces a 48-hour event cooldown
         +-- Calls OpenAI once for shared Chinese and English copy
-        `-- S3 social/latest.json and social/latest.txt
+        +-- S3 social/latest.json and social/latest.txt
+        `-- Threads API (optional guarded auto-publish)
 ```
 
 ## Repository layout
@@ -71,6 +72,7 @@ variable. Lambda configuration stores only Secrets Manager ARNs:
 - Event collector: `TICKETMASTER_API_KEY`
 - Report generator: `OPENAI_API_KEY`
 - Daily social generator: `OPENAI_API_KEY`
+- Daily social publisher: long-lived Threads token and Threads user ID
 
 Each function receives permission to read only its own secret. See
 [`SECURITY.md`](SECURITY.md) for repository rules.

@@ -7,12 +7,16 @@ import json
 import logging
 import os
 import re
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta
 from functools import lru_cache
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import boto3
+from botocore.exceptions import ClientError
 
 
 LOGGER = logging.getLogger(__name__)
@@ -27,6 +31,15 @@ WEBSITE_URL = os.environ.get(
 )
 COOLDOWN_HOURS = int(os.environ.get("SOCIAL_COOLDOWN_HOURS", "48"))
 MAX_SOCIAL_EVENTS = int(os.environ.get("MAX_SOCIAL_EVENTS", "5"))
+THREADS_SECRET_ID = os.environ.get("THREADS_SECRET_ID", "")
+THREADS_PUBLISH_ENABLED = os.environ.get(
+    "THREADS_PUBLISH_ENABLED", "false"
+).lower() in {"1", "true", "yes"}
+THREADS_API_BASE = "https://graph.threads.net/v1.0"
+THREADS_MAX_POST_LENGTH = 500
+THREADS_TOKEN_REFRESH_DAYS = int(
+    os.environ.get("THREADS_TOKEN_REFRESH_DAYS", "7")
+)
 EASTERN = ZoneInfo("America/New_York")
 
 S3 = boto3.client("s3", region_name=AWS_REGION)
@@ -45,6 +58,89 @@ def get_openai_api_key() -> str:
     if not api_key.strip():
         raise RuntimeError("OPENAI_API_KEY is missing")
     return api_key.strip()
+
+
+def get_threads_credentials() -> dict[str, str]:
+    if not THREADS_SECRET_ID:
+        raise RuntimeError("THREADS_SECRET_ID is missing")
+    response = SECRETS.get_secret_value(SecretId=THREADS_SECRET_ID)
+    values = json.loads(response["SecretString"])
+    required = ("THREADS_ACCESS_TOKEN", "THREADS_USER_ID", "THREADS_USERNAME")
+    missing = [field for field in required if not str(values.get(field, "")).strip()]
+    if missing:
+        raise RuntimeError(f"Threads secret is missing: {', '.join(missing)}")
+    return {str(key): str(value) for key, value in values.items()}
+
+
+def threads_request_json(
+    url: str,
+    *,
+    method: str = "GET",
+    data: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    encoded = urllib.parse.urlencode(data).encode("utf-8") if data else None
+    request = urllib.request.Request(url, data=encoded, method=method)
+    request.add_header("Accept", "application/json")
+    if encoded:
+        request.add_header("Content-Type", "application/x-www-form-urlencoded")
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        try:
+            payload = json.loads(error.read().decode("utf-8"))
+            api_error = payload.get("error", {})
+            message = api_error.get("message", "Threads API error")
+            code = api_error.get("code", error.code)
+        except (json.JSONDecodeError, AttributeError):
+            message = "Threads API error"
+            code = error.code
+        raise RuntimeError(f"Threads API request failed: {message} (code {code})") from None
+
+
+def refresh_threads_token_if_needed(
+    credentials: dict[str, str], now: datetime
+) -> dict[str, str]:
+    expires_at = _parse_datetime(credentials.get("TOKEN_EXPIRES_AT"))
+    if not expires_at:
+        LOGGER.warning("Threads token expiry is missing; continuing without refresh")
+        return credentials
+    if expires_at - now.astimezone(EASTERN) > timedelta(
+        days=THREADS_TOKEN_REFRESH_DAYS
+    ):
+        return credentials
+
+    query = urllib.parse.urlencode(
+        {
+            "grant_type": "th_refresh_token",
+            "access_token": credentials["THREADS_ACCESS_TOKEN"],
+        }
+    )
+    refreshed = threads_request_json(
+        f"https://graph.threads.net/refresh_access_token?{query}"
+    )
+    token = str(refreshed.get("access_token", ""))
+    expires_in = int(refreshed.get("expires_in", 0))
+    if not token or not expires_in:
+        raise RuntimeError("Threads token refresh returned an incomplete response")
+
+    issued_at = now.astimezone(ZoneInfo("UTC"))
+    credentials.update(
+        {
+            "THREADS_ACCESS_TOKEN": token,
+            "TOKEN_TYPE": str(refreshed.get("token_type", "bearer")),
+            "TOKEN_ISSUED_AT": issued_at.isoformat(),
+            "TOKEN_EXPIRES_AT": (
+                issued_at + timedelta(seconds=expires_in)
+            ).isoformat(),
+        }
+    )
+    SECRETS.put_secret_value(
+        SecretId=THREADS_SECRET_ID,
+        SecretString=json.dumps(credentials),
+    )
+    LOGGER.info("Refreshed the Threads long-lived token")
+    return credentials
 
 
 def chat_model_options(api_key: str, temperature: float) -> dict[str, Any]:
@@ -234,11 +330,125 @@ def render_shared_text(content: dict[str, Any]) -> str:
     ).strip()
 
 
+def split_threads_text(text: str, limit: int = THREADS_MAX_POST_LENGTH) -> list[str]:
+    """Split shared copy on paragraph/word boundaries without changing its text."""
+    if limit < 1:
+        raise ValueError("Threads post length limit must be positive")
+    chunks: list[str] = []
+    current = ""
+
+    def append_piece(piece: str, separator: str) -> None:
+        nonlocal current
+        candidate = f"{current}{separator}{piece}" if current else piece
+        if len(candidate) <= limit:
+            current = candidate
+            return
+        if current:
+            chunks.append(current)
+            current = ""
+        while len(piece) > limit:
+            boundary = piece.rfind(" ", 0, limit + 1)
+            if boundary <= 0:
+                boundary = limit
+            chunks.append(piece[:boundary].rstrip())
+            piece = piece[boundary:].lstrip()
+        current = piece
+
+    for paragraph in text.split("\n\n"):
+        append_piece(paragraph, "\n\n")
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def create_threads_container(
+    user_id: str,
+    token: str,
+    text: str,
+    reply_to_id: str | None = None,
+) -> str:
+    data = {
+        "media_type": "TEXT",
+        "text": text,
+        "access_token": token,
+    }
+    if reply_to_id:
+        data["reply_to_id"] = reply_to_id
+    response = threads_request_json(
+        f"{THREADS_API_BASE}/{user_id}/threads",
+        method="POST",
+        data=data,
+    )
+    creation_id = str(response.get("id", ""))
+    if not creation_id:
+        raise RuntimeError("Threads did not return a creation container ID")
+    return creation_id
+
+
+def publish_threads_container(user_id: str, token: str, creation_id: str) -> str:
+    response = threads_request_json(
+        f"{THREADS_API_BASE}/{user_id}/threads_publish",
+        method="POST",
+        data={"creation_id": creation_id, "access_token": token},
+    )
+    post_id = str(response.get("id", ""))
+    if not post_id:
+        raise RuntimeError("Threads did not return a published post ID")
+    return post_id
+
+
+def publish_threads_text(text: str, credentials: dict[str, str]) -> list[str]:
+    post_ids: list[str] = []
+    reply_to_id = None
+    for chunk in split_threads_text(text):
+        creation_id = create_threads_container(
+            credentials["THREADS_USER_ID"],
+            credentials["THREADS_ACCESS_TOKEN"],
+            chunk,
+            reply_to_id,
+        )
+        post_id = publish_threads_container(
+            credentials["THREADS_USER_ID"],
+            credentials["THREADS_ACCESS_TOKEN"],
+            creation_id,
+        )
+        post_ids.append(post_id)
+        reply_to_id = post_id
+    return post_ids
+
+
+def publication_key(now: datetime) -> str:
+    return f"social/publications/threads/{now:%Y-%m-%d}.json"
+
+
+def write_publication_state(key: str, state: dict[str, Any], *, claim: bool = False) -> None:
+    kwargs: dict[str, Any] = {
+        "Bucket": BUCKET_NAME,
+        "Key": key,
+        "Body": json.dumps(state, ensure_ascii=False, indent=2).encode("utf-8"),
+        "ContentType": "application/json; charset=utf-8",
+    }
+    if claim:
+        kwargs["IfNoneMatch"] = "*"
+    try:
+        S3.put_object(**kwargs)
+    except ClientError as error:
+        if claim and error.response.get("Error", {}).get("Code") in {
+            "PreconditionFailed",
+            "412",
+        }:
+            raise RuntimeError(
+                "Threads publication was already claimed; refusing a duplicate post"
+            ) from None
+        raise
+
+
 def store_campaign(
     content: dict[str, Any],
     events: list[dict[str, Any]],
     history: dict[str, Any],
     now: datetime,
+    threads_state: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     campaign_id = now.strftime("%Y-%m-%d")
     event_ids = [event["event_id"] for event in events]
@@ -249,7 +459,7 @@ def store_campaign(
         "shared_text": render_shared_text(content),
         "selected_event_ids": event_ids,
         "platforms": {
-            "threads": {"status": "ready"},
+            "threads": threads_state or {"status": "ready"},
             "xiaohongshu": {"status": "manual_draft"},
         },
     }
@@ -292,6 +502,23 @@ def store_campaign(
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     now = datetime.now(EASTERN)
+    publish_key = publication_key(now)
+    if THREADS_PUBLISH_ENABLED:
+        existing = load_json(publish_key, default={})
+        if existing:
+            status = existing.get("status", "unknown")
+            if status == "published":
+                return {
+                    "success": True,
+                    "generated_at": existing.get("updated_at"),
+                    "threads_publish_status": "already_published",
+                    "thread_post_ids": existing.get("post_ids", []),
+                }
+            raise RuntimeError(
+                f"Threads publication state is {status}; inspect {publish_key} "
+                "before retrying to avoid a duplicate post"
+            )
+
     events_data = load_json("events/latest.json")
     history = load_json("social/history.json", default={})
     selected = select_social_events(events_data, history, now)
@@ -299,11 +526,61 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         raise RuntimeError("No eligible events remain after the 48-hour cooldown")
     content = generate_content(selected, now)
     keys = store_campaign(content, selected, history, now)
+    threads_result: dict[str, Any] = {"status": "disabled"}
+    if THREADS_PUBLISH_ENABLED:
+        shared_text = render_shared_text(content)
+        claim = {
+            "campaign_id": now.strftime("%Y-%m-%d"),
+            "status": "publishing",
+            "updated_at": now.isoformat(),
+            "content_sha256": hashlib.sha256(shared_text.encode("utf-8")).hexdigest(),
+        }
+        write_publication_state(publish_key, claim, claim=True)
+        try:
+            credentials = refresh_threads_token_if_needed(
+                get_threads_credentials(), now
+            )
+            post_ids = publish_threads_text(shared_text, credentials)
+        except Exception as error:
+            failed = {
+                **claim,
+                "status": "failed",
+                "updated_at": datetime.now(EASTERN).isoformat(),
+                "error_type": type(error).__name__,
+            }
+            write_publication_state(publish_key, failed)
+            store_campaign(
+                content,
+                selected,
+                history,
+                now,
+                threads_state={"status": "failed"},
+            )
+            raise
+        threads_result = {
+            "status": "published",
+            "post_ids": post_ids,
+            "username": credentials["THREADS_USERNAME"],
+        }
+        published = {
+            **claim,
+            **threads_result,
+            "updated_at": datetime.now(EASTERN).isoformat(),
+        }
+        write_publication_state(publish_key, published)
+        store_campaign(
+            content,
+            selected,
+            history,
+            now,
+            threads_state=threads_result,
+        )
     result = {
         "success": True,
         "generated_at": now.isoformat(),
         "selected_event_ids": [event["event_id"] for event in selected],
         "platform_content": "shared",
+        "threads": threads_result,
         "s3_keys": keys,
     }
     LOGGER.info("Daily social campaign generated: %s", json.dumps(result))

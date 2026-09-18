@@ -3,7 +3,7 @@ import pathlib
 import sys
 import unittest
 from datetime import datetime, timedelta
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
 
@@ -127,6 +127,45 @@ class DailySocialTests(unittest.TestCase):
         self.assertEqual(
             keys["archive"],
             "social/campaigns/2026/09/2026-09-17_070000_123456.json",
+        )
+
+    def test_splits_long_threads_copy_within_platform_limit(self):
+        text = "中文活动" * 140 + "\n\n" + "English event " * 60
+        chunks = MODULE.split_threads_text(text)
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(all(0 < len(chunk) <= 500 for chunk in chunks))
+        self.assertIn("中文活动", chunks[0])
+        self.assertIn("English event", chunks[-1])
+
+    def test_publishes_followup_chunks_as_replies(self):
+        credentials = {
+            "THREADS_USER_ID": "user-1",
+            "THREADS_ACCESS_TOKEN": "secret-token",
+        }
+        with patch.object(
+            MODULE,
+            "split_threads_text",
+            return_value=["first", "second"],
+        ), patch.object(
+            MODULE,
+            "create_threads_container",
+            side_effect=["container-1", "container-2"],
+        ) as create, patch.object(
+            MODULE,
+            "publish_threads_container",
+            side_effect=["post-1", "post-2"],
+        ):
+            post_ids = MODULE.publish_threads_text("copy", credentials)
+
+        self.assertEqual(post_ids, ["post-1", "post-2"])
+        self.assertEqual(create.call_args_list[0].args[-1], None)
+        self.assertEqual(create.call_args_list[1].args[-1], "post-1")
+
+    def test_publication_key_is_one_per_local_day(self):
+        now = datetime(2026, 9, 17, 7, tzinfo=ZoneInfo("America/New_York"))
+        self.assertEqual(
+            MODULE.publication_key(now),
+            "social/publications/threads/2026-09-17.json",
         )
 
 
