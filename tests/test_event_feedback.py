@@ -73,6 +73,41 @@ class EventFeedbackTests(unittest.TestCase):
         )
         self.assertEqual(result["statusCode"], 400)
 
+    def test_unlike_transaction_does_not_send_unused_zero_value(self):
+        original_dynamodb = MODULE.DYNAMODB
+        original_loader = MODULE.load_current_activity
+        mock = MagicMock()
+        mock.batch_get_item.return_value = {
+            "Responses": {MODULE.TABLE_NAME: []}
+        }
+        MODULE.DYNAMODB = mock
+        MODULE.load_current_activity = lambda event_id: (
+            {
+                "event_id": event_id,
+                "title": "Test Event",
+                "city": "Boston",
+                "category": "Community",
+                "source": "Test",
+                "price_type": "free",
+            },
+            "2026-09-18T07:00:00-04:00",
+        )
+        try:
+            MODULE.toggle_feedback(
+                "event_12345678",
+                "a" * 64,
+                "unlike",
+                "77777777-7777-4777-8777-777777777777",
+            )
+        finally:
+            MODULE.DYNAMODB = original_dynamodb
+            MODULE.load_current_activity = original_loader
+
+        update = mock.transact_write_items.call_args.kwargs["TransactItems"][1][
+            "Update"
+        ]
+        self.assertNotIn(":zero", update["ExpressionAttributeValues"])
+
 
 if __name__ == "__main__":
     unittest.main()

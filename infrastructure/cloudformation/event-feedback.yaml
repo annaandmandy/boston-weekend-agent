@@ -54,7 +54,9 @@ Resources:
                 Action:
                   - dynamodb:BatchGetItem
                   - dynamodb:GetItem
-                  - dynamodb:TransactWriteItems
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
                 Resource: !GetAtt FeedbackTable.Arn
               - Effect: Allow
                 Action: s3:GetObject

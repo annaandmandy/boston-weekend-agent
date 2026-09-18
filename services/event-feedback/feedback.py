@@ -167,7 +167,6 @@ def toggle_feedback(
         "#source": "source",
     }
     summary_values = {
-        ":zero": {"N": "0"},
         ":one": {"N": "1"},
         ":now": {"S": now},
         ":title": string_attribute(activity.get("title")),
@@ -177,6 +176,7 @@ def toggle_feedback(
     }
 
     if action == "like":
+        summary_values[":zero"] = {"N": "0"}
         voter_operation = {
             "Put": {
                 "TableName": TABLE_NAME,
