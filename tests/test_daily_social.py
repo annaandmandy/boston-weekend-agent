@@ -292,6 +292,8 @@ class DailySocialTests(unittest.TestCase):
         self.assertIn("2-3 varied kaomoji", prompt_text)
         self.assertIn("emotional punctuation", prompt_text)
         self.assertIn("fixed top expression", prompt_text.replace("\n", " "))
+        self.assertIn("optional flavor, not a quota", prompt_text.replace("\n", " "))
+        self.assertIn("Taiwan-style zhuyin", prompt_text)
 
     def test_ranking_prompt_uses_identity_memory_and_no_distance_quota(self):
         prompt = MODULE.build_ranking_prompt()

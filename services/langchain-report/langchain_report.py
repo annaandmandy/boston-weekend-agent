@@ -24,7 +24,7 @@ BUCKET_NAME = os.environ.get("REPORT_BUCKET", "boston-weekend-agent-reports")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6-luna")
 OPENAI_REASONING_EFFORT = os.environ.get("OPENAI_REASONING_EFFORT", "none")
 PROMPT_VERSION = os.environ.get(
-    "REPORT_PROMPT_VERSION", "v3.2-bobo-inline-kaomoji"
+    "REPORT_PROMPT_VERSION", "v3.3-bobo-conversational"
 )
 RANKING_PROMPT_VERSION = "ai-semantic-ranking-v1"
 BOBO_MEMORY_KEY = os.environ.get("BOBO_MEMORY_KEY", "agent/bobo-memory.json")
@@ -761,6 +761,12 @@ they sound natural. Do not put kaomoji in titles and do not generate a signature
 The application separately preserves Bo's fixed top expression and signed
 expression, so these contextual expressions should complement rather than repeat
 those two identity anchors.
+
+The Traditional Chinese body may occasionally use a short Taiwan-style zhuyin
+character or playful internet spelling when it genuinely fits a reaction or
+aside. This is optional flavor, never a quota: do not force it into every report,
+repeat it mechanically, or sacrifice clarity. Do not imitate or translate this
+typography in the English version.
 
 Return strict JSON only, without code fences. The root object must contain keys
 `zh` and `en`. Each value must be an object containing exactly two string keys:

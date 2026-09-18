@@ -526,6 +526,11 @@ one conversational parenthetical aside per language. Do not put kaomoji in title
 and do not generate a signature; the application separately preserves Bo's
 fixed top expression and fixed signed expression.
 
+The Traditional Chinese body may occasionally use one short Taiwan-style zhuyin
+character or playful internet spelling when it arises naturally in the sentence.
+This is optional flavor, not a quota: never force it, repeat it mechanically, or
+let it reduce clarity. Do not imitate or translate this typography in English.
+
 Return strict JSON with exactly these top-level keys: zh, en, hashtags. `zh` and
 `en` must each contain exactly `title` and `body` strings. `hashtags` must be an
 array of language-neutral or bilingual strings without leading # characters.""",
@@ -586,7 +591,7 @@ def generate_content(
     ).get("token_usage", {})
     return parse_model_json(response.content), {
         "model": OPENAI_MODEL,
-        "prompt_version": "bobo-social-story-v3",
+        "prompt_version": "bobo-social-story-v4",
         "token_usage": usage or {},
     }
 
