@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "memory_version": "2026-09-17.1",
+  "updated_at": "2026-09-17T23:30:00-04:00",
+  "updated_by": "user_and_maintainer",
+  "home_context": {
+    "home_base": "Boston University Charles River Campus",
+    "usual_area": "Boston",
+    "coverage_area": "Greater Boston"
+  },
+  "stable_preferences": {
+    "nearby_default": "Prefer Boston, BU-area, Brookline, Cambridge, and easy nearby trips when event value is otherwise similar.",
+    "distance_rule": "Distance is a convenience factor, never a quota or veto.",
+    "destination_exception": "A rare annual, culturally significant, visually distinctive, or community-defining event can outrank routine nearby activities.",
+    "known_example": "The Revere International Sand Sculpting Festival is the kind of destination-worthy event that should remain visible despite travel distance.",
+    "content_goal": "Recommend leisure plans that feel useful, delightful, and realistically plan-able rather than filling a list."
+  },
+  "learned_preferences": [],
+  "feedback_summary": {
+    "positive_signals": [],
+    "negative_signals": [],
+    "last_evaluated_at": null
+  },
+  "evolution_policy": {
+    "core_persona_is_immutable_at_runtime": true,
+    "require_evidence_for_learned_preferences": true,
+    "minimum_feedback_examples": 3,
+    "retain_prior_versions": true,
+    "human_review_required": true
+  }
+}

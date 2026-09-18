@@ -60,6 +60,7 @@ Create `collect_events_v2` as an x86_64 image Lambda. Configure:
 - `MAX_EVENTS_PER_SOURCE`: `10`
 - `MAX_CITY_EVENTS`: `30`
 - `DAYS_AHEAD`: `10`
+- `VERIFY_TICKET_PAGE_STATUS`: `true`
 
 Attach the standard Lambda basic execution policy and the scoped statements in
 `infrastructure/iam/collect-events-policy.json` after replacing the placeholder.
@@ -137,9 +138,14 @@ Create an immutable, scan-on-push ECR repository named
 - `SOCIAL_COOLDOWN_HOURS`: `48`
 - `MAX_SOCIAL_EVENTS`: `5`
 - `WEBSITE_URL`: `https://www.hsiangyuhuang.com/weekend_report`
+- `THREADS_SECRET_ID`: the ARN for `boston-weekend-agent/threads`
+- `THREADS_PUBLISH_ENABLED`: `false` during the first deployment
+- `THREADS_TOKEN_REFRESH_DAYS`: `7`
 
 Attach the standard Lambda basic execution policy and the scoped statements in
-`infrastructure/iam/daily-social-policy.json` after replacing the placeholder.
+`infrastructure/iam/daily-social-policy.json` after replacing both secret ARN
+placeholders. The Threads statement permits `PutSecretValue` so the Lambda can
+refresh the long-lived token before it expires.
 
 Invoke the function directly before creating its schedule. Confirm that these
 objects exist and contain the same shared copy:
@@ -148,6 +154,52 @@ objects exist and contain the same shared copy:
 - `social/latest.txt`
 - `social/campaigns/YYYY/MM/YYYY-MM-DD.json`
 - `social/history.json`
+
+### Connect Threads publishing
+
+Install the extra AWS login credential dependency once in the local virtual
+environment:
+
+```bash
+.venv/bin/pip install 'botocore[crt]'
+```
+
+Run `scripts/setup_threads_oauth.py` and follow its hidden prompts to exchange
+the callback authorization code. The script validates the expected Threads
+username and writes the long-lived token to `boston-weekend-agent/threads`
+without printing it.
+
+After the Lambda image and IAM policy are updated, keep
+`THREADS_PUBLISH_ENABLED=false` for one direct invocation and inspect
+`social/latest.txt`. Confirm that the Chinese section uses Traditional Chinese.
+When the copy is acceptable, change the flag to `true` and
+invoke once. A successful run creates
+`social/publications/threads/YYYY-MM-DD.json` with status `published` and the
+Threads post IDs.
+
+Before enabling the daily schedule, preview Bo's fixed bilingual introduction:
+
+```bash
+/opt/homebrew/bin/aws lambda invoke \
+  --function-name daily_social \
+  --payload '{"mode":"introduction"}' \
+  --cli-binary-format raw-in-base64-out \
+  --profile boston-deployer \
+  --region us-east-1 \
+  /tmp/bobo-introduction.json
+```
+
+It uses zero OpenAI calls and includes the public Weekly Report link. After
+review, set `THREADS_PUBLISH_ENABLED=true` and invoke with
+`{"mode":"introduction","publish":true}`. Its separate idempotency record is
+`social/publications/threads/introduction.json`, so it cannot collide with a
+daily post. Publish the introduction before enabling the recurring social
+schedule.
+
+That publication object is an idempotency guard. A second invocation on the
+same local date returns `already_published`. If its status is `publishing` or
+`failed`, inspect the Threads account and CloudWatch logs before removing or
+changing it; blindly retrying could duplicate a partially published thread.
 
 ## Install the schedules
 

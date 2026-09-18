@@ -20,6 +20,61 @@ SPEC.loader.exec_module(MODULE)
 
 
 class LangChainReportTests(unittest.TestCase):
+    def test_weekend_prompt_is_bilingual_bobo_letter(self):
+        prompt_text = str(MODULE.build_prompt())
+        self.assertIn("波波 Bo", prompt_text)
+        self.assertIn("Traditional Chinese version comes first", prompt_text)
+        self.assertIn("700-1000 Traditional Chinese characters", prompt_text)
+        self.assertIn("450-650 English words", prompt_text)
+        self.assertIn("weekend letter", prompt_text)
+        self.assertIn("repetitive numbered list", prompt_text)
+        self.assertIn("Write them as raw URLs", prompt_text)
+        self.assertIn("Do not invent or", prompt_text)
+
+    def test_daily_and_weekend_persona_files_match(self):
+        daily_persona_path = (
+            pathlib.Path(__file__).parents[1]
+            / "services"
+            / "daily-social"
+            / "persona.json"
+        )
+        self.assertEqual(
+            __import__("json").loads(daily_persona_path.read_text()),
+            MODULE.load_persona(),
+        )
+
+    def test_daily_and_weekend_default_memory_files_match(self):
+        daily_memory_path = (
+            pathlib.Path(__file__).parents[1]
+            / "services"
+            / "daily-social"
+            / "memory.default.json"
+        )
+        self.assertEqual(
+            __import__("json").loads(daily_memory_path.read_text()),
+            MODULE.load_default_memory(),
+        )
+
+    def test_ranking_prompt_uses_bobo_identity_and_memory(self):
+        prompt = MODULE.build_ranking_prompt()
+        prompt_text = str(prompt)
+        self.assertIn("Bo's versioned identity", prompt_text)
+        self.assertIn("reviewed long-term memory", prompt_text)
+        self.assertIn("never a quota or veto", prompt_text)
+        rendered = prompt.format(
+            persona_json="{}", memory_json="{}", events_json="[]"
+        )
+        self.assertIn('{"rankings"', rendered)
+
+    def test_report_finalizer_removes_emoji_and_adds_bobo_identity(self):
+        rendered = MODULE.finalize_report_text(
+            "**週末來信** ☀️\n\n先去散步。",
+            "⌖ˎˊ˗ 〔✦ᴗ✦〕ノ",
+        )
+        self.assertNotIn("☀️", rendered)
+        self.assertTrue(rendered.startswith("⌖ˎˊ˗ 〔✦ᴗ✦〕ノ"))
+        self.assertTrue(rendered.endswith("— 波波 ⌖ˎˊ˗ 〔•ᴗ•〕ゞ"))
+
     def test_luna_uses_reasoning_effort_without_temperature(self):
         original_model = MODULE.OPENAI_MODEL
         original_effort = MODULE.OPENAI_REASONING_EFFORT
@@ -129,6 +184,80 @@ class LangChainReportTests(unittest.TestCase):
         self.assertEqual(
             {event["name"] for event in events}, {"Friday Music", "Sunday Tour"}
         )
+
+    def test_weekend_report_excludes_unavailable_event(self):
+        now = datetime(2026, 9, 17, 17, tzinfo=ZoneInfo("America/New_York"))
+        data = {
+            "events": [
+                {
+                    "name": "Sold out concert",
+                    "date": "2026-09-18",
+                    "availability_status": "sold_out",
+                },
+                {
+                    "name": "Open concert",
+                    "date": "2026-09-18",
+                    "availability_status": "onsale",
+                },
+            ]
+        }
+        events = MODULE.filter_and_prioritize_events(data, now)
+        self.assertEqual([event["name"] for event in events], ["Open concert"])
+
+    def test_ai_can_rank_destination_event_above_nearby_routine_event(self):
+        candidates = [
+                {
+                    "event_id": "nearby",
+                    "name": "Nearby activity",
+                    "recommendation_score": 90,
+                },
+                {
+                    "event_id": "revere",
+                    "name": "Revere Sand Sculpting Festival",
+                    "recommendation_score": 80,
+                },
+        ]
+        response = __import__("json").dumps(
+            {
+                "rankings": [
+                    {
+                        "event_id": "revere",
+                        "score": 90,
+                        "dimensions": {
+                            "leisure_appeal": 24,
+                            "local_significance": 24,
+                            "rarity": 19,
+                            "value": 8,
+                            "proximity_fit": 6,
+                            "information_confidence": 9,
+                        },
+                        "destination_worthy": True,
+                        "significance_signals": ["annual"],
+                        "reason_zh": "值得专程前往。",
+                        "reason_en": "Worth the trip.",
+                    },
+                    {
+                        "event_id": "nearby",
+                        "score": 66,
+                        "dimensions": {
+                            "leisure_appeal": 20,
+                            "local_significance": 10,
+                            "rarity": 8,
+                            "value": 8,
+                            "proximity_fit": 10,
+                            "information_confidence": 10,
+                        },
+                        "destination_worthy": False,
+                        "significance_signals": [],
+                        "reason_zh": "方便但日常。",
+                        "reason_en": "Convenient but routine.",
+                    },
+                ]
+            }
+        )
+        events = MODULE.parse_ai_rankings(response, candidates)
+        self.assertEqual(events[0]["event_id"], "revere")
+        self.assertEqual(events[0]["ai_ranking"]["dimensions"]["rarity"], 19)
 
     def test_normalizes_accidental_json_suffix(self):
         self.assertEqual(

@@ -1,9 +1,10 @@
 import importlib.util
+import json
 import pathlib
 import sys
 import unittest
 from datetime import datetime, timedelta
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
 
@@ -46,6 +47,167 @@ class DailySocialTests(unittest.TestCase):
         selected = MODULE.select_social_events(data, {}, now)
         self.assertEqual({event["event_id"] for event in selected}, {"today", "tomorrow"})
 
+    def test_keeps_full_candidate_ranking_for_analysis(self):
+        now = datetime(2026, 9, 17, 7, tzinfo=ZoneInfo("America/New_York"))
+        data = {
+            "events": [
+                {
+                    "event_id": f"event-{index}",
+                    "name": f"Event {index}",
+                    "date": "2026-09-17",
+                    "recommendation_score": 80 - index,
+                }
+                for index in range(7)
+            ]
+        }
+        ranked = MODULE.rank_social_events(data, {}, now)
+        selected = MODULE.select_social_events(data, {}, now)
+        self.assertEqual(len(ranked), 7)
+        self.assertEqual(len(selected), MODULE.MAX_SOCIAL_EVENTS)
+        self.assertEqual(
+            [event["event_id"] for event in selected],
+            [event["event_id"] for event in ranked[: MODULE.MAX_SOCIAL_EVENTS]],
+        )
+
+    def test_ai_can_rank_destination_event_above_nearby_routine_event(self):
+        candidates = [
+            {
+                "event_id": "local",
+                "name": "Routine nearby activity",
+                "recommendation_score": 90,
+            },
+            {
+                "event_id": "revere-sand-festival",
+                "name": "Revere Sand Sculpting Festival",
+                "recommendation_score": 80,
+            },
+        ]
+        response = json.dumps(
+            {
+                "rankings": [
+                    {
+                        "event_id": "revere-sand-festival",
+                        "score": 90,
+                        "dimensions": {
+                            "leisure_appeal": 24,
+                            "local_significance": 24,
+                            "rarity": 19,
+                            "value": 8,
+                            "proximity_fit": 6,
+                            "information_confidence": 9,
+                        },
+                        "destination_worthy": True,
+                        "significance_signals": ["annual", "community landmark"],
+                        "reason_zh": "年度代表性活动，值得专程前往。",
+                        "reason_en": "A distinctive annual destination event.",
+                    },
+                    {
+                        "event_id": "local",
+                        "score": 66,
+                        "dimensions": {
+                            "leisure_appeal": 20,
+                            "local_significance": 10,
+                            "rarity": 8,
+                            "value": 8,
+                            "proximity_fit": 10,
+                            "information_confidence": 10,
+                        },
+                        "destination_worthy": False,
+                        "significance_signals": [],
+                        "reason_zh": "方便但较日常。",
+                        "reason_en": "Convenient but routine.",
+                    },
+                ]
+            }
+        )
+        ranked = MODULE.parse_ai_rankings(response, candidates)
+        selected = MODULE.choose_social_events(ranked)
+        self.assertEqual(selected[0]["event_id"], "revere-sand-festival")
+        self.assertEqual(selected[0]["selection_lane"], "ai_destination_worthy")
+        self.assertEqual(selected[0]["ai_ranking"]["dimensions"]["rarity"], 19)
+
+    def test_campaign_stores_auditable_free_ranking(self):
+        original_s3 = MODULE.S3
+        MODULE.S3 = MagicMock()
+        now = datetime(2026, 9, 17, 7, tzinfo=ZoneInfo("America/New_York"))
+        ranked = [
+            {
+                "event_id": "revere-festival",
+                "recommendation_score": 80,
+                "social_score": 90,
+                "ai_ranking": {"score": 90, "destination_worthy": True},
+                "selection_lane": "ai_destination_worthy",
+            },
+            {
+                "event_id": "bu-concert",
+                "recommendation_score": 90,
+                "social_score": 66,
+                "ai_ranking": {"score": 66, "destination_worthy": False},
+                "selection_lane": "ai_semantic_rank",
+            },
+        ]
+        try:
+            MODULE.store_campaign(
+                {
+                    "zh": {"title": "今日活動", "body": "今天的活動。"},
+                    "en": {"title": "Boston today", "body": "Today's events."},
+                    "hashtags": ["Boston"],
+                },
+                ranked,
+                {},
+                now,
+                ranked_events=ranked,
+            )
+            campaign = json.loads(MODULE.S3.put_object.call_args_list[0].kwargs["Body"])
+        finally:
+            MODULE.S3 = original_s3
+
+        self.assertFalse(campaign["ranking_policy"]["fixed_local_quota"])
+        decisions = {
+            decision["event_id"]: decision
+            for decision in campaign["selection_decisions"]
+        }
+        self.assertEqual(decisions["revere-festival"]["base_score_rank"], 2)
+        self.assertEqual(decisions["revere-festival"]["final_score_rank"], 1)
+        self.assertEqual(decisions["revere-festival"]["final_selection_rank"], 1)
+        self.assertEqual(decisions["revere-festival"]["ai_ranking"]["score"], 90)
+        self.assertEqual(
+            campaign["ranking_policy"]["method"], "bobo_ai_semantic_ranking"
+        )
+        self.assertEqual(campaign["openai_call_count"], 2)
+
+    def test_ai_ranking_clamps_dimension_overflow_and_records_warning(self):
+        response = json.dumps(
+            {
+                "rankings": [
+                    {
+                        "event_id": "event-1",
+                        "score": 110,
+                        "dimensions": {
+                            "leisure_appeal": 30,
+                            "local_significance": 25,
+                            "rarity": 20,
+                            "value": 10,
+                            "proximity_fit": 10,
+                            "information_confidence": 15,
+                        },
+                        "destination_worthy": True,
+                        "significance_signals": [],
+                        "reason_zh": "测试",
+                        "reason_en": "Test",
+                    }
+                ]
+            }
+        )
+        ranked = MODULE.parse_ai_rankings(
+            response, [{"event_id": "event-1", "name": "Event"}]
+        )
+        self.assertEqual(ranked[0]["ai_ranking"]["score"], 100)
+        self.assertEqual(
+            ranked[0]["ai_ranking"]["raw_dimensions"]["leisure_appeal"], 30
+        )
+        self.assertTrue(ranked[0]["ai_ranking"]["normalization_warnings"])
+
     def test_enforces_48_hour_cooldown(self):
         eastern = ZoneInfo("America/New_York")
         now = datetime(2026, 9, 17, 7, tzinfo=eastern)
@@ -64,38 +226,147 @@ class DailySocialTests(unittest.TestCase):
         selected = MODULE.select_social_events(data, history, now)
         self.assertEqual([event["event_id"] for event in selected], ["old"])
 
+    def test_excludes_unavailable_events(self):
+        now = datetime(2026, 9, 17, 7, tzinfo=ZoneInfo("America/New_York"))
+        data = {
+            "events": [
+                {
+                    "event_id": "sold-out",
+                    "name": "Sold out show",
+                    "date": "2026-09-17",
+                    "availability_status": "sold_out",
+                },
+                {
+                    "event_id": "available",
+                    "name": "Available show",
+                    "date": "2026-09-17",
+                    "availability_status": "onsale",
+                },
+            ]
+        }
+        selected = MODULE.select_social_events(data, {}, now)
+        self.assertEqual([event["event_id"] for event in selected], ["available"])
+
     def test_renders_one_identical_shared_post(self):
         content = {
             "zh": {
-                "title": "Boston 今日活动",
-                "body": "今天可以去公园听音乐。",
+                "title": "Boston 今日活動",
+                "body": "今天可以去公園聽音樂。",
             },
             "en": {
                 "title": "What's on in Boston today",
                 "body": "Listen to live music in the park today.",
             },
-            "hashtags": ["Boston", "波士顿生活"],
+            "hashtags": ["Boston", "波士頓生活"],
         }
         rendered = MODULE.render_shared_text(content)
-        self.assertIn("Boston 今日活动", rendered)
+        self.assertIn("Boston 今日活動", rendered)
         self.assertLess(
-            rendered.index("Boston 今日活动"),
+            rendered.index("Boston 今日活動"),
             rendered.index("What's on in Boston today"),
         )
         self.assertIn("—— English ——", rendered)
-        self.assertIn("#Boston #波士顿生活", rendered)
+        self.assertIn("#Boston #波士頓生活", rendered)
+        self.assertIn("— 波波 ⌖ˎˊ˗ 〔•ᴗ•〕ゞ", rendered)
 
     def test_parses_structured_bilingual_content(self):
         content = MODULE.parse_model_json(
             """{
-                "zh": {"title": "今日活动", "body": "中文内容"},
+                "zh": {"title": "今日活動", "body": "中文內容"},
                 "en": {"title": "Today's events", "body": "English copy"},
-                "hashtags": ["#Boston", "周末去哪"]
+                "hashtags": ["#Boston", "週末去哪"]
             }"""
         )
-        self.assertEqual(content["zh"]["body"], "中文内容")
+        self.assertEqual(content["zh"]["body"], "中文內容")
         self.assertEqual(content["en"]["body"], "English copy")
-        self.assertEqual(content["hashtags"], ["Boston", "周末去哪"])
+        self.assertEqual(content["hashtags"], ["Boston", "週末去哪"])
+
+    def test_prompt_requires_traditional_chinese(self):
+        prompt_text = str(MODULE.build_prompt())
+        self.assertIn("Traditional Chinese", prompt_text)
+        self.assertIn("Never use Simplified Chinese", prompt_text)
+        self.assertIn("instead of a numbered or repetitive list", prompt_text)
+        self.assertIn("conversational tiny story", prompt_text)
+        self.assertIn("350-500 Traditional Chinese characters", prompt_text)
+        self.assertIn("220-300 English words", prompt_text)
+        self.assertIn("Do not place emoji", prompt_text)
+
+    def test_ranking_prompt_uses_identity_memory_and_no_distance_quota(self):
+        prompt = MODULE.build_ranking_prompt()
+        prompt_text = str(prompt)
+        self.assertIn("Runtime identity", prompt_text)
+        self.assertIn("long-term preference memory", prompt_text)
+        self.assertIn("never a quota or veto", prompt_text)
+        self.assertIn("local_significance", prompt_text)
+        rendered = prompt.format(
+            persona_json="{}", memory_json="{}", events_json="[]"
+        )
+        self.assertIn('{"rankings"', rendered)
+
+    def test_rejects_model_generated_emoji(self):
+        with self.assertRaisesRegex(ValueError, "contained emoji"):
+            MODULE.parse_model_json(
+                """{
+                    "zh": {"title": "今日活動", "body": "出門走走☀️"},
+                    "en": {"title": "Today", "body": "Go outside"},
+                    "hashtags": ["Boston"]
+                }"""
+            )
+
+    def test_kaomoji_is_deterministic_for_same_campaign(self):
+        now = datetime(2026, 9, 17, 7, tzinfo=ZoneInfo("America/New_York"))
+        events = [
+            {
+                "event_id": "music-1",
+                "name": "Live jazz by the harbor",
+                "date": "2026-09-17",
+            }
+        ]
+        first = MODULE.select_kaomoji(events, now)
+        second = MODULE.select_kaomoji(events, now)
+        self.assertEqual(first, second)
+        self.assertTrue(first.startswith("⌖ˎˊ˗"))
+
+    def test_render_adds_one_mood_face_and_fixed_signature(self):
+        content = {
+            "zh": {"title": "今晚去哪裡", "body": "散步看表演。"},
+            "en": {"title": "Tonight in Boston", "body": "Take a walk."},
+            "hashtags": ["Boston"],
+        }
+        mood = "⌖ˎˊ˗ 〔✦ᴗ✦〕ノ"
+        rendered = MODULE.render_shared_text(content, mood)
+        self.assertEqual(rendered.count(mood), 1)
+        self.assertTrue(rendered.endswith("— 波波 ⌖ˎˊ˗ 〔•ᴗ•〕ゞ"))
+
+    def test_threads_introduction_is_bilingual_single_post_with_report_link(self):
+        text = MODULE.render_threads_introduction()
+        self.assertIn("嗨，我是波波", text)
+        self.assertIn("Hi, I'm Bo", text)
+        self.assertIn(MODULE.WEBSITE_URL, text)
+        self.assertIn("—— English ——", text)
+        self.assertEqual(len(MODULE.split_threads_text(text)), 1)
+        self.assertFalse(MODULE.EMOJI_PATTERN.search(text))
+
+    def test_introduction_preview_is_safe_and_uses_no_openai_call(self):
+        now = datetime(2026, 9, 18, 8, tzinfo=ZoneInfo("America/New_York"))
+        result = MODULE.handle_introduction(
+            {"mode": "introduction", "dry_run": True}, now
+        )
+        self.assertTrue(result["dry_run"])
+        self.assertEqual(result["openai_call_count"], 0)
+        self.assertEqual(result["threads"]["status"], "disabled_dry_run")
+
+    def test_introduction_publish_requires_environment_guard(self):
+        original = MODULE.THREADS_PUBLISH_ENABLED
+        MODULE.THREADS_PUBLISH_ENABLED = False
+        try:
+            with self.assertRaisesRegex(RuntimeError, "THREADS_PUBLISH_ENABLED"):
+                MODULE.handle_introduction(
+                    {"mode": "introduction", "publish": True},
+                    datetime(2026, 9, 18, 8, tzinfo=ZoneInfo("America/New_York")),
+                )
+        finally:
+            MODULE.THREADS_PUBLISH_ENABLED = original
 
     def test_campaign_archive_key_is_immutable_for_retries(self):
         original_s3 = MODULE.S3
@@ -113,7 +384,7 @@ class DailySocialTests(unittest.TestCase):
         try:
             keys = MODULE.store_campaign(
                 {
-                    "zh": {"title": "Boston 今日活动", "body": "今天的活动。"},
+                    "zh": {"title": "Boston 今日活動", "body": "今天的活動。"},
                     "en": {"title": "Boston today", "body": "Today's events."},
                     "hashtags": ["Boston"],
                 },
@@ -127,6 +398,45 @@ class DailySocialTests(unittest.TestCase):
         self.assertEqual(
             keys["archive"],
             "social/campaigns/2026/09/2026-09-17_070000_123456.json",
+        )
+
+    def test_splits_long_threads_copy_within_platform_limit(self):
+        text = "中文活动" * 140 + "\n\n" + "English event " * 60
+        chunks = MODULE.split_threads_text(text)
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(all(0 < len(chunk) <= 500 for chunk in chunks))
+        self.assertIn("中文活动", chunks[0])
+        self.assertIn("English event", chunks[-1])
+
+    def test_publishes_followup_chunks_as_replies(self):
+        credentials = {
+            "THREADS_USER_ID": "user-1",
+            "THREADS_ACCESS_TOKEN": "secret-token",
+        }
+        with patch.object(
+            MODULE,
+            "split_threads_text",
+            return_value=["first", "second"],
+        ), patch.object(
+            MODULE,
+            "create_threads_container",
+            side_effect=["container-1", "container-2"],
+        ) as create, patch.object(
+            MODULE,
+            "publish_threads_container",
+            side_effect=["post-1", "post-2"],
+        ):
+            post_ids = MODULE.publish_threads_text("copy", credentials)
+
+        self.assertEqual(post_ids, ["post-1", "post-2"])
+        self.assertEqual(create.call_args_list[0].args[-1], None)
+        self.assertEqual(create.call_args_list[1].args[-1], "post-1")
+
+    def test_publication_key_is_one_per_local_day(self):
+        now = datetime(2026, 9, 17, 7, tzinfo=ZoneInfo("America/New_York"))
+        self.assertEqual(
+            MODULE.publication_key(now),
+            "social/publications/threads/2026-09-17.json",
         )
 
 

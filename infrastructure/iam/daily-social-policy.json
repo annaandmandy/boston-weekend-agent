@@ -8,6 +8,15 @@
       "Resource": "${OPENAI_SECRET_ARN}"
     },
     {
+      "Sid": "ReadAndRefreshThreadsSecret",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:PutSecretValue"
+      ],
+      "Resource": "${THREADS_SECRET_ARN}"
+    },
+    {
       "Sid": "FindSocialHistory",
       "Effect": "Allow",
       "Action": "s3:ListBucket",
@@ -24,7 +33,9 @@
       "Action": "s3:GetObject",
       "Resource": [
         "arn:aws:s3:::boston-weekend-agent-reports/events/latest.json",
-        "arn:aws:s3:::boston-weekend-agent-reports/social/history.json"
+        "arn:aws:s3:::boston-weekend-agent-reports/agent/bobo-memory.json",
+        "arn:aws:s3:::boston-weekend-agent-reports/social/history.json",
+        "arn:aws:s3:::boston-weekend-agent-reports/social/publications/threads/*"
       ]
     },
     {

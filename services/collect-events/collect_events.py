@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import hashlib
 import logging
+import math
 import os
 import re
 import time
@@ -12,7 +13,7 @@ import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Any, Callable
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from zoneinfo import ZoneInfo
 
 import boto3
@@ -31,6 +32,9 @@ MAX_CITY_EVENTS = int(os.environ.get("MAX_CITY_EVENTS", "30"))
 TICKETMASTER_RADIUS_MILES = int(os.environ.get("TICKETMASTER_RADIUS_MILES", "25"))
 REQUEST_TIMEOUT_SECONDS = int(os.environ.get("REQUEST_TIMEOUT_SECONDS", "15"))
 MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "3"))
+VERIFY_TICKET_PAGE_STATUS = os.environ.get(
+    "VERIFY_TICKET_PAGE_STATUS", "true"
+).lower() in {"1", "true", "yes"}
 
 EASTERN = ZoneInfo("America/New_York")
 S3 = boto3.client("s3", region_name=AWS_REGION)
@@ -46,6 +50,44 @@ HEADERS = {
 
 BOSTON_LATITUDE = 42.3601
 BOSTON_LONGITUDE = -71.0589
+HOME_BASE = {
+    "name": "Boston University Charles River Campus",
+    "latitude": 42.3505,
+    "longitude": -71.1054,
+}
+NEAR_BU_KEYWORDS = (
+    "boston university",
+    "kenmore",
+    "fenway",
+    "allston",
+    "brighton",
+    "back bay",
+    "brookline",
+    "commonwealth ave",
+    "charles river esplanade",
+)
+INNER_RING_CITIES = {
+    "boston",
+    "brookline",
+    "cambridge",
+    "chelsea",
+    "everett",
+    "medford",
+    "newton",
+    "quincy",
+    "revere",
+    "somerville",
+}
+DESTINATION_EVENT_PATTERNS = {
+    r"\bcarnival\b": "carnival",
+    r"\bcultural[\s-]+festival\b": "cultural festival",
+    r"\bfireworks?\b": "fireworks",
+    r"\bopen[\s-]+studios?\b": "open studios",
+    r"\bparade\b": "parade",
+    r"\bregatta\b": "regatta",
+    r"\bsand[\s-]+sculpt(?:ure|ing)?s?\b": "sand sculpture festival",
+    r"\bfestival\b": "festival",
+}
 
 # Official, structured community calendars. CivicPlus feeds use the same
 # iCalendar format, so additional nearby towns can be added without another
@@ -92,6 +134,8 @@ NON_LEISURE_PATTERN = re.compile(
     r"flu clinic|vaccination clinic|closed|closure)\b",
     re.IGNORECASE,
 )
+
+TICKET_PAGE_DOMAINS = ("ticketmaster.com", "ticketweb.com")
 
 
 def _now() -> datetime:
@@ -175,6 +219,7 @@ def event_content_hash(event: dict[str, Any]) -> str:
         "city",
         "category",
         "price",
+        "availability_status",
         "description",
         "link",
     )
@@ -218,6 +263,234 @@ def calculate_event_score(event: dict[str, Any]) -> float:
     score += 0.5 if event.get("image_url") else 0
     score += 0.5 if "free" in str(event.get("price") or "").lower() else 0
     return score
+
+
+def distance_miles(
+    latitude: float,
+    longitude: float,
+    base_latitude: float = HOME_BASE["latitude"],
+    base_longitude: float = HOME_BASE["longitude"],
+) -> float:
+    """Calculate straight-line distance from Bo's home base."""
+    earth_radius_miles = 3958.8
+    lat1, lon1, lat2, lon2 = map(
+        math.radians,
+        (base_latitude, base_longitude, latitude, longitude),
+    )
+    delta_latitude = lat2 - lat1
+    delta_longitude = lon2 - lon1
+    haversine = (
+        math.sin(delta_latitude / 2) ** 2
+        + math.cos(lat1) * math.cos(lat2) * math.sin(delta_longitude / 2) ** 2
+    )
+    return earth_radius_miles * 2 * math.asin(math.sqrt(haversine))
+
+
+def proximity_component(event: dict[str, Any]) -> tuple[float, float | None, str]:
+    searchable = " ".join(
+        str(event.get(field) or "")
+        for field in ("location", "address", "city")
+    ).lower()
+    if any(keyword in searchable for keyword in NEAR_BU_KEYWORDS):
+        return 30.0, None, "BU-area location"
+
+    try:
+        latitude = float(event["latitude"])
+        longitude = float(event["longitude"])
+    except (KeyError, TypeError, ValueError):
+        latitude = longitude = None
+    if latitude is not None and longitude is not None:
+        miles = distance_miles(latitude, longitude)
+        if miles <= 2.5:
+            score = 30
+        elif miles <= 5:
+            score = 26
+        elif miles <= 10:
+            score = 20
+        elif miles <= 15:
+            score = 15
+        elif miles <= 25:
+            score = 10
+        else:
+            score = 5
+        return float(score), round(miles, 1), f"{miles:.1f} miles from BU"
+
+    city = str(event.get("city") or "").lower()
+    if city == "boston":
+        return 24.0, None, "Boston location"
+    if city in {"brookline", "cambridge"}:
+        return 22.0, None, "adjacent to Boston/BU"
+    if city in INNER_RING_CITIES:
+        return 16.0, None, "nearby Greater Boston city"
+    if city == "natick":
+        return 8.0, None, "outer Greater Boston"
+    return 10.0, None, "distance not precisely known"
+
+
+def destination_worthiness(event: dict[str, Any]) -> tuple[bool, list[str]]:
+    """Identify distinctive events that merit a transparent ranking boost."""
+    text = " ".join(
+        str(event.get(field) or "")
+        for field in ("name", "description", "category")
+    ).lower()
+    reasons = sorted(
+        {
+            label
+            for pattern, label in DESTINATION_EVENT_PATTERNS.items()
+            if re.search(pattern, text)
+        }
+    )
+    return bool(reasons), reasons
+
+
+def calculate_recommendation(event: dict[str, Any], *, today: date | None = None) -> dict[str, Any]:
+    """Produce an explainable 100-point score for recommendation analysis."""
+    proximity, miles, proximity_reason = proximity_component(event)
+
+    quality_fields = ("name", "date", "time", "location", "link")
+    data_quality = sum(3 for field in quality_fields if event.get(field))
+    data_quality += 3 if len(str(event.get("description") or "")) > 50 else 0
+    data_quality += 2 if event.get("price") else 0
+    data_quality = min(float(data_quality), 20.0)
+
+    text = " ".join(
+        str(event.get(field) or "")
+        for field in ("name", "description", "category")
+    ).lower()
+    if any(term in text for term in ("festival", "seasonal", "sand sculpt", "parade")):
+        interest = 20.0
+        interest_reason = "distinctive or seasonal event"
+    elif any(
+        term in text
+        for term in (
+            "art",
+            "concert",
+            "dance",
+            "fitness",
+            "food",
+            "jazz",
+            "market",
+            "museum",
+            "music",
+            "outdoor",
+            "tour",
+        )
+    ):
+        interest = 15.0
+        interest_reason = "strong leisure fit"
+    else:
+        interest = 9.0
+        interest_reason = "general leisure event"
+
+    price_text = str(event.get("price") or "")
+    if "free" in price_text.lower():
+        affordability = 10.0
+    else:
+        price_match = re.search(r"\$(\d+(?:\.\d+)?)", price_text)
+        if price_match and float(price_match.group(1)) <= 25:
+            affordability = 7.0
+        elif price_match:
+            affordability = 4.0
+        else:
+            affordability = 5.0
+
+    event_date = parse_event_date(event.get("date"))
+    start = today or _now().date()
+    offset = (event_date - start).days if event_date else DAYS_AHEAD + 1
+    timeliness = 10.0 if offset == 0 else 9.0 if offset == 1 else 8.0 if offset == 2 else 5.0 if offset <= 7 else 3.0
+
+    source = str(event.get("source") or "")
+    source_confidence = 10.0 if source != "Ticketmaster" else 8.0
+    destination_worthy, destination_reasons = destination_worthiness(event)
+    status = str(event.get("availability_status") or "unknown").lower()
+    eligible = status not in {
+        "canceled",
+        "cancelled",
+        "offsale",
+        "postponed",
+        "rescheduled",
+        "sold_out",
+    }
+    components = {
+        "proximity": proximity,
+        "data_quality": data_quality,
+        "interest": interest,
+        "affordability": affordability,
+        "timeliness": timeliness,
+        "source_confidence": source_confidence,
+    }
+    total = round(sum(components.values()), 1) if eligible else 0.0
+    return {
+        "schema_version": "1.0",
+        "score": total,
+        "eligible": eligible,
+        "home_base": HOME_BASE["name"],
+        "distance_miles": miles,
+        "components": components,
+        "reasons": [proximity_reason, interest_reason],
+        "destination_worthy": destination_worthy and eligible,
+        "destination_reasons": destination_reasons,
+    }
+
+
+def normalize_ticket_price(minimum: Any, maximum: Any) -> str | None:
+    """Treat a synthetic zero range as unknown, not as a free ticket."""
+    if minimum is None:
+        return None
+    if float(minimum) == 0 and maximum is not None and float(maximum) == 0:
+        return None
+    if maximum is not None:
+        return f"${float(minimum):g}-${float(maximum):g}"
+    return f"From ${float(minimum):g}"
+
+
+def detect_ticket_page_status(text: str) -> str | None:
+    soup = BeautifulSoup(text, "html.parser")
+    for element in soup.select("footer, nav, script, style"):
+        element.decompose()
+    normalized = clean_text(soup.get_text(" "))
+    normalized = normalized or ""
+    lower = normalized.lower()
+    sold_out_patterns = (
+        r"\bsold out every ticket\b",
+        r"\btickets? (?:are|is|have been) sold out\b",
+        r"\bevent (?:is|has been) sold out\b",
+    )
+    if "SOLD OUT" in normalized or any(
+        re.search(pattern, lower) for pattern in sold_out_patterns
+    ):
+        return "sold_out"
+    if re.search(r"\b(?:event )?cancell?ed\b", lower):
+        return "canceled"
+    if re.search(r"\b(?:event )?postponed\b", lower):
+        return "postponed"
+    return None
+
+
+def fetch_ticket_page_status(url: str | None) -> str | None:
+    if not VERIFY_TICKET_PAGE_STATUS or not url:
+        return None
+    hostname = (urlparse(url).hostname or "").lower()
+    if not any(
+        hostname == domain or hostname.endswith(f".{domain}")
+        for domain in TICKET_PAGE_DOMAINS
+    ):
+        return None
+    try:
+        response = requests.get(
+            url,
+            headers=HEADERS,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+    except requests.RequestException as error:
+        LOGGER.warning(
+            "Ticket page status check failed for %s: %s",
+            hostname,
+            type(error).__name__,
+        )
+        return None
+    return detect_ticket_page_status(response.text)
 
 
 def encode_geohash(latitude: float, longitude: float, precision: int = 7) -> str:
@@ -278,11 +551,12 @@ def fetch_ticketmaster_events() -> list[dict[str, Any]]:
         venue = raw.get("_embedded", {}).get("venues", [{}])[0]
         prices = (raw.get("priceRanges") or [{}])[0]
         minimum, maximum = prices.get("min"), prices.get("max")
-        price = None
-        if minimum is not None and maximum is not None:
-            price = f"${minimum:g}-${maximum:g}"
-        elif minimum is not None:
-            price = f"From ${minimum:g}"
+        price = normalize_ticket_price(minimum, maximum)
+        link = raw.get("url")
+        api_status = str(
+            raw.get("dates", {}).get("status", {}).get("code") or "unknown"
+        ).lower()
+        availability_status = fetch_ticket_page_status(link) or api_status
         events.append(
             {
                 "name": clean_text(raw.get("name")),
@@ -291,16 +565,19 @@ def fetch_ticketmaster_events() -> list[dict[str, Any]]:
                 "location": venue.get("name") or "Boston, MA",
                 "address": venue.get("address", {}).get("line1"),
                 "city": venue.get("city", {}).get("name") or "Boston",
+                "latitude": venue.get("location", {}).get("latitude"),
+                "longitude": venue.get("location", {}).get("longitude"),
                 "category": (
                     raw.get("classifications", [{}])[0]
                     .get("segment", {})
                     .get("name", "Event")
                 ),
                 "price": price,
+                "availability_status": availability_status,
                 "description": clean_text(raw.get("info")),
                 "image_url": (raw.get("images") or [{}])[0].get("url"),
                 "source": "Ticketmaster",
-                "link": raw.get("url"),
+                "link": link,
             }
         )
     LOGGER.info("Ticketmaster returned %s events", len(events))
@@ -700,15 +977,20 @@ def deduplicate_and_rank(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if NON_LEISURE_PATTERN.search(event.get("name") or ""):
             continue
         event["quality_score"] = calculate_event_score(event)
+        event["recommendation"] = calculate_recommendation(event)
+        event["recommendation_score"] = event["recommendation"]["score"]
         key = (
             (event.get("name") or "").lower().strip(),
             event.get("date") or "unknown",
         )
-        if key not in unique or event["quality_score"] > unique[key]["quality_score"]:
+        if key not in unique or event["recommendation_score"] > unique[key]["recommendation_score"]:
             unique[key] = event
     ranked = sorted(
         (event for event in unique.values() if event["quality_score"] >= 4),
-        key=lambda event: (event.get("date") or "9999-12-31", -event["quality_score"]),
+        key=lambda event: (
+            event.get("date") or "9999-12-31",
+            -event["recommendation_score"],
+        ),
     )
     for event in ranked:
         event["event_id"] = make_event_id(event)
@@ -736,6 +1018,7 @@ def build_change_set(
         "location",
         "address",
         "price",
+        "availability_status",
         "description",
         "link",
     )

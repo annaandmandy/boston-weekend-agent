@@ -127,6 +127,103 @@ class CollectEventsTests(unittest.TestCase):
         geohash = MODULE.encode_geohash(42.3601, -71.0589)
         self.assertEqual(geohash, "drt2zp2")
 
+    def test_ticketmaster_zero_range_is_unknown_not_free(self):
+        self.assertIsNone(MODULE.normalize_ticket_price(0, 0))
+        self.assertEqual(MODULE.normalize_ticket_price(22, 27), "$22-$27")
+
+    def test_detects_sold_out_ticket_page(self):
+        html = """
+        <main><h1>Chxrry</h1>
+        <p>SOLD OUT — EVERY TICKET HAS BEEN SOLD</p></main>
+        """
+        self.assertEqual(MODULE.detect_ticket_page_status(html), "sold_out")
+
+    def test_ticket_page_without_warning_has_no_override(self):
+        html = "<main><h1>Community Concert</h1><p>Tickets available</p></main>"
+        self.assertIsNone(MODULE.detect_ticket_page_status(html))
+
+    def test_generic_sold_out_question_does_not_mark_event_unavailable(self):
+        html = "<footer><p>What should I do if another event is sold out?</p></footer>"
+        self.assertIsNone(MODULE.detect_ticket_page_status(html))
+
+    def test_recommendation_prefers_bu_area(self):
+        today = date(2026, 9, 17)
+        near = {
+            "name": "Neighborhood activity",
+            "date": "2026-09-18",
+            "time": "18:00:00",
+            "location": "Kenmore Square",
+            "city": "Boston",
+            "link": "https://example.org/near",
+            "source": "Boston.gov",
+        }
+        far = {**near, "location": "Town Common", "city": "Natick"}
+        near_score = MODULE.calculate_recommendation(near, today=today)
+        far_score = MODULE.calculate_recommendation(far, today=today)
+        self.assertGreater(near_score["score"], far_score["score"])
+        self.assertEqual(near_score["components"]["proximity"], 30)
+
+    def test_distinctive_outer_event_can_compete_on_other_components(self):
+        today = date(2026, 9, 17)
+        nearby_generic = {
+            "name": "Community activity",
+            "date": "2026-09-18",
+            "time": "18:00:00",
+            "location": "Boston Common",
+            "city": "Boston",
+            "link": "https://example.org/near",
+            "source": "Boston.gov",
+        }
+        outer_festival = {
+            **nearby_generic,
+            "name": "Annual seasonal arts festival",
+            "location": "Natick Common",
+            "city": "Natick",
+            "price": "Free",
+            "description": "A distinctive annual festival with local artists and performances.",
+        }
+        nearby_score = MODULE.calculate_recommendation(nearby_generic, today=today)
+        outer_score = MODULE.calculate_recommendation(outer_festival, today=today)
+        self.assertGreaterEqual(outer_score["score"], nearby_score["score"])
+
+    def test_unavailable_event_keeps_components_but_scores_zero(self):
+        event = {
+            "name": "Sold out show",
+            "date": "2026-09-18",
+            "location": "Kenmore Square",
+            "city": "Boston",
+            "availability_status": "sold_out",
+        }
+        result = MODULE.calculate_recommendation(
+            event, today=date(2026, 9, 17)
+        )
+        self.assertFalse(result["eligible"])
+        self.assertEqual(result["score"], 0)
+
+    def test_revere_sand_sculpting_is_destination_worthy(self):
+        event = {
+            "name": "Revere International Sand Sculpting Festival",
+            "date": "2026-09-19",
+            "city": "Revere",
+            "source": "Revere Community",
+        }
+        result = MODULE.calculate_recommendation(
+            event, today=date(2026, 9, 17)
+        )
+        self.assertTrue(result["destination_worthy"])
+        self.assertIn("sand sculpture festival", result["destination_reasons"])
+
+    def test_regattabar_does_not_trigger_regatta_boost(self):
+        event = {
+            "name": "George Coleman Quintet",
+            "description": "Contact regattabar@example.com for group tickets.",
+            "category": "Music",
+            "location": "Regattabar",
+        }
+        worthy, reasons = MODULE.destination_worthiness(event)
+        self.assertFalse(worthy)
+        self.assertNotIn("regatta", reasons)
+
     def test_parse_ical_events_unfolds_and_filters_meetings(self):
         calendar = """BEGIN:VCALENDAR\r
 BEGIN:VEVENT\r
