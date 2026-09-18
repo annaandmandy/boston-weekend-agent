@@ -338,6 +338,36 @@ class DailySocialTests(unittest.TestCase):
         self.assertEqual(rendered.count(mood), 1)
         self.assertTrue(rendered.endswith("— 波波 ⌖ˎˊ˗ 〔•ᴗ•〕ゞ"))
 
+    def test_threads_introduction_is_bilingual_single_post_with_report_link(self):
+        text = MODULE.render_threads_introduction()
+        self.assertIn("嗨，我是波波", text)
+        self.assertIn("Hi, I'm Bo", text)
+        self.assertIn(MODULE.WEBSITE_URL, text)
+        self.assertIn("—— English ——", text)
+        self.assertEqual(len(MODULE.split_threads_text(text)), 1)
+        self.assertFalse(MODULE.EMOJI_PATTERN.search(text))
+
+    def test_introduction_preview_is_safe_and_uses_no_openai_call(self):
+        now = datetime(2026, 9, 18, 8, tzinfo=ZoneInfo("America/New_York"))
+        result = MODULE.handle_introduction(
+            {"mode": "introduction", "dry_run": True}, now
+        )
+        self.assertTrue(result["dry_run"])
+        self.assertEqual(result["openai_call_count"], 0)
+        self.assertEqual(result["threads"]["status"], "disabled_dry_run")
+
+    def test_introduction_publish_requires_environment_guard(self):
+        original = MODULE.THREADS_PUBLISH_ENABLED
+        MODULE.THREADS_PUBLISH_ENABLED = False
+        try:
+            with self.assertRaisesRegex(RuntimeError, "THREADS_PUBLISH_ENABLED"):
+                MODULE.handle_introduction(
+                    {"mode": "introduction", "publish": True},
+                    datetime(2026, 9, 18, 8, tzinfo=ZoneInfo("America/New_York")),
+                )
+        finally:
+            MODULE.THREADS_PUBLISH_ENABLED = original
+
     def test_campaign_archive_key_is_immutable_for_retries(self):
         original_s3 = MODULE.S3
         MODULE.S3 = MagicMock()
@@ -354,7 +384,7 @@ class DailySocialTests(unittest.TestCase):
         try:
             keys = MODULE.store_campaign(
                 {
-                    "zh": {"title": "Boston 今日活动", "body": "今天的活动。"},
+                    "zh": {"title": "Boston 今日活動", "body": "今天的活動。"},
                     "en": {"title": "Boston today", "body": "Today's events."},
                     "hashtags": ["Boston"],
                 },

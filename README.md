@@ -3,6 +3,23 @@
 A serverless AWS workflow that collects upcoming Boston events, combines them
 with weather context, and generates a concise weekend guide with an LLM.
 
+## Meet Bo / 認識波波
+
+波波（Bo）是一台住在 Boston 雲端地圖裡的黃色探路機器人，也是這個專案的
+production editorial agent。波波不是替活動做關鍵字排序的吉祥物：它會讀取經過
+驗證的活動資料、角色設定與版本化偏好記憶，理解年度節慶、在地文化、稀有性與
+交通距離之間的取捨，再說明每項推薦為什麼值得去。距離是方便程度，不是硬性門檻。
+
+Bo is the project's production editorial agent: a cheerful yellow map robot
+that lives in the Boston cloud. Bo semantically ranks verified Greater Boston
+events, explains the decision, and writes a Traditional Chinese and English
+daily note plus a Thursday/Friday weekend letter. Deterministic code still owns
+hard facts such as dates, cancellations, sold-out status, cooldowns, and links.
+
+Bo's core identity is versioned with the Lambda images. Its reviewed long-term
+preference memory lives in S3, with immutable history and the memory version
+recorded in every ranking run. Runtime models cannot silently rewrite either.
+
 The project originally used an EC2-hosted scraper and an ECR-backed report
 Lambda. This version removes the always-on EC2 dependency and packages both the
 event collector and report generator as reproducible Lambda container images.
@@ -40,7 +57,8 @@ AWS Step Functions
 Daily social Lambda
         +-- Reads the same normalized event snapshot
         +-- Enforces a 48-hour event cooldown
-        +-- Calls OpenAI once for shared Chinese and English copy
+        +-- Calls OpenAI once for semantic ranking and once for shared copy
+        +-- Loads Bo's versioned persona and reviewed S3 memory
         +-- S3 social/latest.json and social/latest.txt
         `-- Threads API (optional guarded auto-publish)
 ```
@@ -62,6 +80,7 @@ docs/
   recommendation-scoring.md  Explainable BU-centered event ranking
   event-sources.md       Active and candidate Greater Boston sources
   analytics-history.md   Immutable report inputs and lineage manifest
+  agent-memory.md        Reviewed, versioned long-term memory policy for Bo
   migration-checklist.md
 tests/                  Offline parser and prioritization tests
 ```
@@ -136,6 +155,10 @@ tests each Lambda independently before changing the production state machine.
 - One bilingual social post (Traditional Chinese first, English second) is generated daily
   and reused unchanged for Threads and Xiaohongshu, with a 48-hour event
   cooldown.
+- Bo's first Threads post uses a dedicated zero-LLM introduction mode with a
+  separate idempotency key. Preview it with `{"mode":"introduction"}`; actual
+  publication additionally requires `{"mode":"introduction","publish":true}`
+  and `THREADS_PUBLISH_ENABLED=true`.
 - The report Lambda reads source data directly from S3, keeping Step Functions
   payloads small.
 

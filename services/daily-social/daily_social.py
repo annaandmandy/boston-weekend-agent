@@ -43,6 +43,7 @@ THREADS_TOKEN_REFRESH_DAYS = int(
     os.environ.get("THREADS_TOKEN_REFRESH_DAYS", "7")
 )
 BOBO_MEMORY_KEY = os.environ.get("BOBO_MEMORY_KEY", "agent/bobo-memory.json")
+THREADS_INTRODUCTION_KEY = "social/publications/threads/introduction.json"
 UNAVAILABLE_EVENT_STATUSES = {
     "canceled",
     "cancelled",
@@ -622,6 +623,24 @@ def render_shared_text(
     ).strip()
 
 
+def render_threads_introduction() -> str:
+    """Return Bo's stable bilingual launch post without spending an LLM call."""
+    return (
+        "嗨，我是波波，一台住在 Boston 雲端地圖裡的黃色探路機器人。"
+        "我每天替你尋找大波士頓值得出門的理由：先看 BU 與市區，"
+        "也為一年一度、值得專程去的活動多走幾站。"
+        "這裡有每日靈感，以及週四先行、週五更新的週末來信。\n\n"
+        "完整 Weekly Report：\n"
+        f"{WEBSITE_URL}\n\n"
+        "—— English ——\n\n"
+        "Hi, I'm Bo, a little yellow map robot in the Boston cloud. "
+        "I scout things worth doing around Greater Boston—starting near BU, but "
+        "traveling farther for rare local traditions. Follow for daily ideas and "
+        "a Thursday weekend letter, refreshed Friday.\n\n"
+        "— 波波 ⌖ˎˊ˗ 〔•ᴗ•〕ゞ"
+    )
+
+
 def split_threads_text(text: str, limit: int = THREADS_MAX_POST_LENGTH) -> list[str]:
     """Split shared copy on paragraph/word boundaries without changing its text."""
     if limit < 1:
@@ -711,6 +730,83 @@ def publish_threads_text(text: str, credentials: dict[str, str]) -> list[str]:
 
 def publication_key(now: datetime) -> str:
     return f"social/publications/threads/{now:%Y-%m-%d}.json"
+
+
+def handle_introduction(event: dict[str, Any], now: datetime) -> dict[str, Any]:
+    text = render_threads_introduction()
+    chunks = split_threads_text(text)
+    should_publish = bool(event.get("publish"))
+    if not should_publish:
+        return {
+            "success": True,
+            "dry_run": True,
+            "mode": "introduction",
+            "generated_at": now.isoformat(),
+            "openai_call_count": 0,
+            "shared_text": text,
+            "threads_chunks": chunks,
+            "threads": {"status": "disabled_dry_run"},
+        }
+    if not THREADS_PUBLISH_ENABLED:
+        raise RuntimeError(
+            "Introduction publishing requires THREADS_PUBLISH_ENABLED=true"
+        )
+
+    existing = load_json(THREADS_INTRODUCTION_KEY, default={})
+    if existing:
+        status = existing.get("status", "unknown")
+        if status == "published":
+            return {
+                "success": True,
+                "mode": "introduction",
+                "threads_publish_status": "already_published",
+                "thread_post_ids": existing.get("post_ids", []),
+            }
+        raise RuntimeError(
+            f"Threads introduction state is {status}; inspect "
+            f"{THREADS_INTRODUCTION_KEY} before retrying"
+        )
+
+    claim = {
+        "campaign_id": "bobo-introduction-v1",
+        "status": "publishing",
+        "updated_at": now.isoformat(),
+        "content_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+    }
+    write_publication_state(THREADS_INTRODUCTION_KEY, claim, claim=True)
+    try:
+        credentials = refresh_threads_token_if_needed(get_threads_credentials(), now)
+        post_ids = publish_threads_text(text, credentials)
+    except Exception as error:
+        write_publication_state(
+            THREADS_INTRODUCTION_KEY,
+            {
+                **claim,
+                "status": "failed",
+                "updated_at": datetime.now(EASTERN).isoformat(),
+                "error_type": type(error).__name__,
+            },
+        )
+        raise
+
+    published = {
+        **claim,
+        "status": "published",
+        "post_ids": post_ids,
+        "username": credentials["THREADS_USERNAME"],
+        "updated_at": datetime.now(EASTERN).isoformat(),
+    }
+    write_publication_state(THREADS_INTRODUCTION_KEY, published)
+    return {
+        "success": True,
+        "mode": "introduction",
+        "openai_call_count": 0,
+        "threads": {
+            "status": "published",
+            "post_ids": post_ids,
+            "username": credentials["THREADS_USERNAME"],
+        },
+    }
 
 
 def write_publication_state(key: str, state: dict[str, Any], *, claim: bool = False) -> None:
@@ -846,6 +942,9 @@ def store_campaign(
 
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     now = datetime.now(EASTERN)
+    if isinstance(event, dict) and event.get("mode") == "introduction":
+        return handle_introduction(event, now)
+
     publish_key = publication_key(now)
     if THREADS_PUBLISH_ENABLED:
         existing = load_json(publish_key, default={})

@@ -177,6 +177,25 @@ invoke once. A successful run creates
 `social/publications/threads/YYYY-MM-DD.json` with status `published` and the
 Threads post IDs.
 
+Before enabling the daily schedule, preview Bo's fixed bilingual introduction:
+
+```bash
+/opt/homebrew/bin/aws lambda invoke \
+  --function-name daily_social \
+  --payload '{"mode":"introduction"}' \
+  --cli-binary-format raw-in-base64-out \
+  --profile boston-deployer \
+  --region us-east-1 \
+  /tmp/bobo-introduction.json
+```
+
+It uses zero OpenAI calls and includes the public Weekly Report link. After
+review, set `THREADS_PUBLISH_ENABLED=true` and invoke with
+`{"mode":"introduction","publish":true}`. Its separate idempotency record is
+`social/publications/threads/introduction.json`, so it cannot collide with a
+daily post. Publish the introduction before enabling the recurring social
+schedule.
+
 That publication object is an idempotency guard. A second invocation on the
 same local date returns `already_published`. If its status is `publishing` or
 `failed`, inspect the Threads account and CloudWatch logs before removing or
