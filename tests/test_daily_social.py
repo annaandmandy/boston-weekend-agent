@@ -98,7 +98,7 @@ class DailySocialTests(unittest.TestCase):
                         },
                         "destination_worthy": True,
                         "significance_signals": ["annual", "community landmark"],
-                        "reason_zh": "年度代表性活动，值得专程前往。",
+                        "reason_zh": "年度代表性活動，值得專程前往。",
                         "reason_en": "A distinctive annual destination event.",
                     },
                     {
@@ -114,7 +114,7 @@ class DailySocialTests(unittest.TestCase):
                         },
                         "destination_worthy": False,
                         "significance_signals": [],
-                        "reason_zh": "方便但较日常。",
+                        "reason_zh": "方便但較日常。",
                         "reason_en": "Convenient but routine.",
                     },
                 ]
@@ -193,7 +193,7 @@ class DailySocialTests(unittest.TestCase):
                         },
                         "destination_worthy": True,
                         "significance_signals": [],
-                        "reason_zh": "测试",
+                        "reason_zh": "測試",
                         "reason_en": "Test",
                     }
                 ]
@@ -401,11 +401,11 @@ class DailySocialTests(unittest.TestCase):
         )
 
     def test_splits_long_threads_copy_within_platform_limit(self):
-        text = "中文活动" * 140 + "\n\n" + "English event " * 60
+        text = "中文活動" * 140 + "\n\n" + "English event " * 60
         chunks = MODULE.split_threads_text(text)
         self.assertGreater(len(chunks), 1)
         self.assertTrue(all(0 < len(chunk) <= 500 for chunk in chunks))
-        self.assertIn("中文活动", chunks[0])
+        self.assertIn("中文活動", chunks[0])
         self.assertIn("English event", chunks[-1])
 
     def test_publishes_followup_chunks_as_replies(self):
