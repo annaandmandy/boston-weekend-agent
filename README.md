@@ -58,6 +58,7 @@ Daily social Lambda
         +-- Reads the same normalized event snapshot
         +-- Enforces a 48-hour event cooldown
         +-- Calls OpenAI once for semantic ranking and once for shared copy
+        +-- Validates Bo's bilingual voice; one repair call is allowed if needed
         +-- Loads Bo's versioned persona and reviewed S3 memory
         +-- S3 social/latest.json and social/latest.txt
         `-- Threads API (optional guarded auto-publish)
@@ -155,6 +156,10 @@ tests each Lambda independently before changing the production state machine.
 - One bilingual social post (Traditional Chinese first, English second) is generated daily
   and reused unchanged for Threads and Xiaohongshu, with a 48-hour event
   cooldown.
+- Both social copy and weekend letters keep Bo's fixed opening and signoff while
+  placing varied contextual kaomoji inside the prose. The normal OpenAI call
+  count is unchanged; a failed voice contract triggers at most one auditable
+  repair call.
 - Bo's first Threads post uses a dedicated zero-LLM introduction mode with a
   separate idempotency key. Preview it with `{"mode":"introduction"}`; actual
   publication additionally requires `{"mode":"introduction","publish":true}`
