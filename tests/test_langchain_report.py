@@ -549,6 +549,30 @@ class LangChainReportTests(unittest.TestCase):
         )
         self.assertIn("do not call these cancelled", formatted)
 
+    def test_sum_token_usage_combines_ranking_and_writing(self):
+        total = MODULE.sum_token_usage(
+            [
+                {
+                    "token_usage": {
+                        "input_tokens": 100,
+                        "output_tokens": 20,
+                        "total_tokens": 120,
+                    }
+                },
+                {
+                    "token_usage": {
+                        "input_tokens": 30,
+                        "output_tokens": 40,
+                        "total_tokens": 70,
+                    }
+                },
+            ]
+        )
+        self.assertEqual(
+            total,
+            {"input_tokens": 130, "output_tokens": 60, "total_tokens": 190},
+        )
+
     def test_friday_compares_against_thursday_weekend_baseline(self):
         baseline = {
             "events": [
