@@ -1,0 +1,147 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Anonymous event feedback API for the Boston Weekend Agent.
+
+Parameters:
+  FeedbackImageUri:
+    Type: String
+    Description: Immutable ECR image URI for the feedback Lambda.
+
+Resources:
+  FeedbackTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: boston-weekend-event-feedback
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Project
+          Value: boston-weekend-agent
+
+  FeedbackLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: boston-weekend-feedback-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: boston-weekend-feedback-data
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:BatchGetItem
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                Resource: !GetAtt FeedbackTable.Arn
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: arn:aws:s3:::boston-weekend-agent-reports/reports/weekend_summary.json
+
+  FeedbackFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: boston-weekend-event-feedback
+      PackageType: Image
+      Code:
+        ImageUri: !Ref FeedbackImageUri
+      Role: !GetAtt FeedbackLambdaRole.Arn
+      Architectures:
+        - x86_64
+      MemorySize: 256
+      Timeout: 15
+      Environment:
+        Variables:
+          FEEDBACK_TABLE: !Ref FeedbackTable
+          REPORT_BUCKET: boston-weekend-agent-reports
+          REPORT_KEY: reports/weekend_summary.json
+
+  FeedbackApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: boston-weekend-event-feedback
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowOrigins:
+          - https://www.hsiangyuhuang.com
+          - https://hsiangyuhuang.com
+          - http://127.0.0.1:5173
+          - http://localhost:5173
+        AllowMethods:
+          - POST
+        AllowHeaders:
+          - content-type
+        MaxAge: 3600
+
+  FeedbackIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref FeedbackApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt FeedbackFunction.Arn
+      PayloadFormatVersion: "2.0"
+
+  QueryFeedbackRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref FeedbackApi
+      RouteKey: POST /feedback/query
+      Target: !Sub integrations/${FeedbackIntegration}
+
+  ToggleFeedbackRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref FeedbackApi
+      RouteKey: POST /feedback/toggle
+      Target: !Sub integrations/${FeedbackIntegration}
+
+  FeedbackStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref FeedbackApi
+      StageName: $default
+      AutoDeploy: true
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 20
+        ThrottlingRateLimit: 10
+
+  FeedbackInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref FeedbackFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${FeedbackApi}/*/*
+
+Outputs:
+  FeedbackApiUrl:
+    Description: Base URL used by the website.
+    Value: !GetAtt FeedbackApi.ApiEndpoint
+  FeedbackTableName:
+    Value: !Ref FeedbackTable
+  FeedbackFunctionArn:
+    Value: !GetAtt FeedbackFunction.Arn
