@@ -23,7 +23,9 @@ AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 BUCKET_NAME = os.environ.get("REPORT_BUCKET", "boston-weekend-agent-reports")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6-luna")
 OPENAI_REASONING_EFFORT = os.environ.get("OPENAI_REASONING_EFFORT", "none")
-PROMPT_VERSION = os.environ.get("REPORT_PROMPT_VERSION", "v3.1-bobo-bilingual")
+PROMPT_VERSION = os.environ.get(
+    "REPORT_PROMPT_VERSION", "v3.2-bobo-inline-kaomoji"
+)
 RANKING_PROMPT_VERSION = "ai-semantic-ranking-v1"
 BOBO_MEMORY_KEY = os.environ.get("BOBO_MEMORY_KEY", "agent/bobo-memory.json")
 RANKING_BATCH_SIZE = 15
@@ -746,14 +748,25 @@ enough verified material is available. In each language:
 Use a friendly, lively, lightly playful voice, like a local friend thinking
 through the weekend aloud. Sensory language may set a mood, but every factual
 claim must stay grounded in the supplied data. Mention source uncertainty when
-details are incomplete. Do not output emoji, kaomoji, or a signature; the
+details are incomplete. Do not output Unicode emoji or a signature; the
 application adds Bo's expression and signoff deterministically.
+
+Never use Unicode emoji. In each language body, naturally place 2-4 varied
+kaomoji inside sentences at genuine emotional turns: excitement about a rare
+annual event, playful indecision between plans, relief about cooperative weather,
+or a cautious reaction to incomplete details. Use them like emotional punctuation,
+not as standalone lines, paragraph prefixes, section headings, or replacements for
+facts. Include 1-2 short conversational parenthetical asides per language when
+they sound natural. Do not put kaomoji in titles and do not generate a signature.
+The application separately preserves Bo's fixed top expression and signed
+expression, so these contextual expressions should complement rather than repeat
+those two identity anchors.
 
 Return strict JSON only, without code fences. The root object must contain keys
 `zh` and `en`. Each value must be an object containing exactly two string keys:
 `title` and `body`. Keep the title separate from the Markdown body. Do not add a
-language divider, emoji, kaomoji, or signature; the application renders each
-language separately and adds Bo's identity deterministically.""",
+language divider, Unicode emoji, or signature; the application renders each
+language separately and adds Bo's fixed identity anchors deterministically.""",
             ),
             (
                 "human",

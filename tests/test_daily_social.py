@@ -289,7 +289,9 @@ class DailySocialTests(unittest.TestCase):
         self.assertIn("conversational tiny story", prompt_text)
         self.assertIn("350-500 Traditional Chinese characters", prompt_text)
         self.assertIn("220-300 English words", prompt_text)
-        self.assertIn("Do not place emoji", prompt_text)
+        self.assertIn("2-3 varied kaomoji", prompt_text)
+        self.assertIn("emotional punctuation", prompt_text)
+        self.assertIn("fixed top expression", prompt_text.replace("\n", " "))
 
     def test_ranking_prompt_uses_identity_memory_and_no_distance_quota(self):
         prompt = MODULE.build_ranking_prompt()
@@ -312,6 +314,17 @@ class DailySocialTests(unittest.TestCase):
                     "hashtags": ["Boston"]
                 }"""
             )
+
+    def test_accepts_contextual_kaomoji_inside_both_language_bodies(self):
+        content = MODULE.parse_model_json(
+            """{
+                "zh": {"title": "今日活動", "body": "天氣很配合 〔•̀ᴗ•́〕و 可以出門。"},
+                "en": {"title": "Today's events", "body": "The weather cooperates 〔´ᴗ`〕～ so let's go."},
+                "hashtags": ["Boston"]
+            }"""
+        )
+        self.assertIn("〔•̀ᴗ•́〕و", content["zh"]["body"])
+        self.assertIn("〔´ᴗ`〕～", content["en"]["body"])
 
     def test_kaomoji_is_deterministic_for_same_campaign(self):
         now = datetime(2026, 9, 17, 7, tzinfo=ZoneInfo("America/New_York"))
