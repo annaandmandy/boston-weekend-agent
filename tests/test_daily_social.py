@@ -281,6 +281,16 @@ class DailySocialTests(unittest.TestCase):
         self.assertEqual(content["en"]["body"], "English copy")
         self.assertEqual(content["hashtags"], ["Boston", "週末去哪"])
 
+    def test_parser_preserves_raw_kaomoji_backslash_as_valid_json(self):
+        content = MODULE.parse_model_json(
+            r'''{
+                "zh": {"title": "今日活動", "body": "出門 \(≧▽≦)/"},
+                "en": {"title": "Today", "body": "Let's go \(≧▽≦)/"},
+                "hashtags": ["Boston"]
+            }'''
+        )
+        self.assertIn(r"\(≧▽≦)/", content["zh"]["body"])
+
     def test_prompt_requires_traditional_chinese(self):
         prompt_text = str(MODULE.build_prompt())
         self.assertIn("Traditional Chinese", prompt_text)

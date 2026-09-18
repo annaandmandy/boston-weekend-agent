@@ -677,6 +677,8 @@ def parse_model_json(content: Any) -> dict[str, Any]:
     text = str(content).strip()
     text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\s*```$", "", text)
+    # Preserve raw kaomoji backslashes while making them valid JSON escapes.
+    text = re.sub(r'\\(?!["\\/bfnrtu])', r"\\\\", text)
     result = json.loads(text)
     for language in ("zh", "en"):
         localized = result.get(language)
@@ -729,7 +731,7 @@ the draft. Do not add or remove an event. Do not add a signature or Unicode emoj
 Repair only the conversational voice: each language body must contain 2-3
 different kaomoji naturally inside sentences at genuine emotional turns. They
 must not be standalone lines, paragraph prefixes, or titles. Vary their shapes;
-examples of the range include 〔•̀ᴗ•́〕و, \\(≧▽≦)/, and (((o(*ﾟ▽ﾟ*)o))). Keep
+examples of the range include 〔•̀ᴗ•́〕و, (≧▽≦)ノ, and (((o(*ﾟ▽ﾟ*)o))). Keep
 natural Taiwan Traditional Chinese in `zh` and natural English in `en`.""",
             ),
             ("human", "Repair this draft JSON:\n{draft_json}"),
