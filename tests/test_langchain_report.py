@@ -32,7 +32,25 @@ class LangChainReportTests(unittest.TestCase):
         self.assertIn("Do not invent or", prompt_text)
         self.assertIn("temperatures only in °C", prompt_text)
         self.assertIn("temperatures only in °F", prompt_text)
-        self.assertIn('"zh"', prompt_text)
+        self.assertIn("root object must contain keys", prompt_text)
+        prompt = MODULE.build_prompt()
+        rendered = prompt.format(
+            day_name="Friday",
+            date="2026-09-18",
+            time="08:00",
+            time_of_day="morning",
+            weekend_status="weekend",
+            holiday_context="None",
+            edition="friday-update",
+            best_day="Saturday",
+            best_time="afternoon",
+            temperature_zh="20°C",
+            temperature_en="68°F",
+            rain_chance="0%",
+            events="Events",
+            event_changes="No changes",
+        )
+        self.assertIn("`zh` and `en`", rendered)
 
     def test_daily_and_weekend_persona_files_match(self):
         daily_persona_path = (
@@ -177,12 +195,12 @@ class LangChainReportTests(unittest.TestCase):
         ), patch.object(MODULE, "invoke_ranking_batch", side_effect=fake_rank):
             ranked, metadata = MODULE.ai_rank_weekend_events(candidates, {})
 
-        self.assertEqual(calls, [("batch-1", 15), ("batch-2", 11), ("final", 14)])
+        self.assertEqual(calls, [("batch-1", 15), ("batch-2", 11), ("final", 10)])
         self.assertEqual(len(ranked), 26)
         self.assertEqual(len({event["event_id"] for event in ranked}), 26)
         self.assertEqual(metadata["strategy"], "batched-finalists")
         self.assertEqual(metadata["openai_call_count"], 3)
-        self.assertEqual(metadata["token_usage"]["total_tokens"], 40)
+        self.assertEqual(metadata["token_usage"]["total_tokens"], 36)
 
     def test_legacy_model_keeps_temperature(self):
         original_model = MODULE.OPENAI_MODEL

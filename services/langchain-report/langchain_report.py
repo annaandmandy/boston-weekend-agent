@@ -27,7 +27,7 @@ PROMPT_VERSION = os.environ.get("REPORT_PROMPT_VERSION", "v3.1-bobo-bilingual")
 RANKING_PROMPT_VERSION = "ai-semantic-ranking-v1"
 BOBO_MEMORY_KEY = os.environ.get("BOBO_MEMORY_KEY", "agent/bobo-memory.json")
 RANKING_BATCH_SIZE = 15
-RANKING_FINALIST_LIMIT = 14
+RANKING_FINALIST_LIMIT = 10
 EASTERN = ZoneInfo("America/New_York")
 
 S3 = boto3.client("s3", region_name=AWS_REGION)
@@ -749,13 +749,11 @@ claim must stay grounded in the supplied data. Mention source uncertainty when
 details are incomplete. Do not output emoji, kaomoji, or a signature; the
 application adds Bo's expression and signoff deterministically.
 
-Return strict JSON only, without code fences:
-{{"zh":{{"title":"...","body":"Markdown..."}},
-"en":{{"title":"...","body":"Markdown..."}}}}
-
-Keep the title separate from the Markdown body. Do not add a language divider,
-emoji, kaomoji, or signature; the application renders each language separately
-and adds Bo's identity deterministically.""",
+Return strict JSON only, without code fences. The root object must contain keys
+`zh` and `en`. Each value must be an object containing exactly two string keys:
+`title` and `body`. Keep the title separate from the Markdown body. Do not add a
+language divider, emoji, kaomoji, or signature; the application renders each
+language separately and adds Bo's identity deterministically.""",
             ),
             (
                 "human",
