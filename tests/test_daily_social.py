@@ -267,7 +267,7 @@ class DailySocialTests(unittest.TestCase):
         )
         self.assertIn("—— English ——", rendered)
         self.assertIn("#Boston #波士頓生活", rendered)
-        self.assertIn("— 波波 ⌖ˎˊ˗ 〔•ᴗ•〕ゞ", rendered)
+        self.assertIn("— 波波 Bo ⌖ˎˊ˗ 〔•ᴗ•〕ゞ", rendered)
 
     def test_parses_structured_bilingual_content(self):
         content = MODULE.parse_model_json(
@@ -336,12 +336,13 @@ class DailySocialTests(unittest.TestCase):
         mood = "⌖ˎˊ˗ 〔✦ᴗ✦〕ノ"
         rendered = MODULE.render_shared_text(content, mood)
         self.assertEqual(rendered.count(mood), 1)
-        self.assertTrue(rendered.endswith("— 波波 ⌖ˎˊ˗ 〔•ᴗ•〕ゞ"))
+        self.assertTrue(rendered.endswith("— 波波 Bo ⌖ˎˊ˗ 〔•ᴗ•〕ゞ"))
 
     def test_threads_introduction_is_bilingual_single_post_with_report_link(self):
         text = MODULE.render_threads_introduction()
         self.assertIn("嗨，我是波波", text)
         self.assertIn("Hi, I'm Bo", text)
+        self.assertTrue(text.endswith("— 波波 Bo ⌖ˎˊ˗ 〔•ᴗ•〕ゞ"))
         self.assertIn(MODULE.WEBSITE_URL, text)
         self.assertIn("—— English ——", text)
         self.assertEqual(len(MODULE.split_threads_text(text)), 1)
