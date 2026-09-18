@@ -80,7 +80,8 @@ image Lambda to the new image URI. Configure:
 - Timeout: 300 seconds
 - `OPENAI_SECRET_ID`: full secret ARN
 - `REPORT_BUCKET`: `boston-weekend-agent-reports`
-- `OPENAI_MODEL`: a model available to the configured OpenAI project
+- `OPENAI_MODEL`: `gpt-5.6-luna`
+- `OPENAI_REASONING_EFFORT`: `none`
 
 Remove the plaintext `OPENAI_API_KEY` Lambda environment variable.
 
@@ -111,7 +112,8 @@ Create an immutable, scan-on-push ECR repository named
 - Timeout: 300 seconds
 - `OPENAI_SECRET_ID`: the same scoped OpenAI secret ARN used by the report Lambda
 - `REPORT_BUCKET`: `boston-weekend-agent-reports`
-- `OPENAI_MODEL`: a model available to the configured OpenAI project
+- `OPENAI_MODEL`: `gpt-5.6-luna`
+- `OPENAI_REASONING_EFFORT`: `none`
 - `SOCIAL_COOLDOWN_HOURS`: `48`
 - `MAX_SOCIAL_EVENTS`: `5`
 - `WEBSITE_URL`: `https://www.hsiangyuhuang.com/weekend_report`

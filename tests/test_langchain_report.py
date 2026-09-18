@@ -20,6 +20,31 @@ SPEC.loader.exec_module(MODULE)
 
 
 class LangChainReportTests(unittest.TestCase):
+    def test_luna_uses_reasoning_effort_without_temperature(self):
+        original_model = MODULE.OPENAI_MODEL
+        original_effort = MODULE.OPENAI_REASONING_EFFORT
+        MODULE.OPENAI_MODEL = "gpt-5.6-luna"
+        MODULE.OPENAI_REASONING_EFFORT = "none"
+        try:
+            options = MODULE.chat_model_options("test-key", 0.4)
+        finally:
+            MODULE.OPENAI_MODEL = original_model
+            MODULE.OPENAI_REASONING_EFFORT = original_effort
+
+        self.assertEqual(options["reasoning_effort"], "none")
+        self.assertNotIn("temperature", options)
+
+    def test_legacy_model_keeps_temperature(self):
+        original_model = MODULE.OPENAI_MODEL
+        MODULE.OPENAI_MODEL = "gpt-4o"
+        try:
+            options = MODULE.chat_model_options("test-key", 0.4)
+        finally:
+            MODULE.OPENAI_MODEL = original_model
+
+        self.assertEqual(options["temperature"], 0.4)
+        self.assertNotIn("reasoning_effort", options)
+
     def test_analytics_prefix_is_partitioned_and_unique(self):
         now = datetime(
             2026,

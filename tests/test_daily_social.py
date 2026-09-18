@@ -20,6 +20,20 @@ SPEC.loader.exec_module(MODULE)
 
 
 class DailySocialTests(unittest.TestCase):
+    def test_luna_uses_reasoning_effort_without_temperature(self):
+        original_model = MODULE.OPENAI_MODEL
+        original_effort = MODULE.OPENAI_REASONING_EFFORT
+        MODULE.OPENAI_MODEL = "gpt-5.6-luna"
+        MODULE.OPENAI_REASONING_EFFORT = "none"
+        try:
+            options = MODULE.chat_model_options("test-key", 0.3)
+        finally:
+            MODULE.OPENAI_MODEL = original_model
+            MODULE.OPENAI_REASONING_EFFORT = original_effort
+
+        self.assertEqual(options["reasoning_effort"], "none")
+        self.assertNotIn("temperature", options)
+
     def test_selects_today_and_future_two_days(self):
         now = datetime(2026, 9, 17, 7, tzinfo=ZoneInfo("America/New_York"))
         data = {

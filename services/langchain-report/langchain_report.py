@@ -18,7 +18,8 @@ LOGGER.setLevel(os.environ.get("LOG_LEVEL", "INFO").upper())
 
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 BUCKET_NAME = os.environ.get("REPORT_BUCKET", "boston-weekend-agent-reports")
-OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6-luna")
+OPENAI_REASONING_EFFORT = os.environ.get("OPENAI_REASONING_EFFORT", "none")
 PROMPT_VERSION = os.environ.get("REPORT_PROMPT_VERSION", "v2")
 EASTERN = ZoneInfo("America/New_York")
 
@@ -41,6 +42,19 @@ def get_openai_api_key() -> str:
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is missing")
     return api_key
+
+
+def chat_model_options(api_key: str, temperature: float) -> dict[str, Any]:
+    """Use reasoning controls for current models and sampling for legacy ones."""
+    options: dict[str, Any] = {
+        "model": OPENAI_MODEL,
+        "api_key": api_key,
+    }
+    if OPENAI_MODEL.startswith(("gpt-5", "gpt-6", "o1", "o3", "o4")):
+        options["reasoning_effort"] = OPENAI_REASONING_EFFORT
+    else:
+        options["temperature"] = temperature
+    return options
 
 
 def load_json(key: str) -> dict[str, Any]:
@@ -464,11 +478,7 @@ def generate_report(
     recommendations = (weather_data.get("summary") or {}).get("recommendations") or {}
     top_pick = recommendations.get("top_pick") or {}
 
-    model = ChatOpenAI(
-        model=OPENAI_MODEL,
-        temperature=0.4,
-        api_key=get_openai_api_key(),
-    )
+    model = ChatOpenAI(**chat_model_options(get_openai_api_key(), 0.4))
     result = (build_prompt() | model).invoke(
         {
             **context,
