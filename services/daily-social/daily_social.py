@@ -234,14 +234,24 @@ def rank_social_events(
         if previous_time and previous_time > cutoff:
             continue
 
-        score = float(
+        base_score = float(
             event.get("recommendation_score", event.get("quality_score", 5))
         )
-        score += {0: 4, 1: 2, 2: 1}.get(offset, 0)
-        if "free" in str(event.get("price") or "").lower():
-            score += 1
+        adjustments = {
+            "timing_bonus": {0: 4, 1: 2, 2: 1}.get(offset, 0),
+            "free_bonus": (
+                1 if "free" in str(event.get("price") or "").lower() else 0
+            ),
+            "destination_worthy_bonus": (
+                12
+                if (event.get("recommendation") or {}).get("destination_worthy")
+                else 0
+            ),
+        }
+        score = base_score + sum(adjustments.values())
         event["event_id"] = event_id
         event["day_offset"] = offset
+        event["social_adjustments"] = adjustments
         event["social_score"] = score
         candidates.append(event)
 
@@ -258,31 +268,20 @@ def select_social_events(
 
 
 def choose_social_events(ranked: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Reserve one slot for a destination-worthy event when available."""
+    """Select freely by final score; distance and uniqueness are soft signals."""
     selected = ranked[:MAX_SOCIAL_EVENTS]
     for event in selected:
-        event["selection_lane"] = "ranked"
-    if not selected or MAX_SOCIAL_EVENTS < 2:
-        return selected
-
-    selected_ids = {event["event_id"] for event in selected}
-    destination = next(
-        (
-            event
-            for event in ranked
-            if event["event_id"] not in selected_ids
-            and (event.get("recommendation") or {}).get("destination_worthy")
-        ),
-        None,
-    )
-    if destination:
-        destination["selection_lane"] = "destination_worthy"
-        selected[-1] = destination
+        destination_bonus = event.get("social_adjustments", {}).get(
+            "destination_worthy_bonus", 0
+        )
+        event["selection_lane"] = (
+            "destination_boost" if destination_bonus else "score_rank"
+        )
     return selected
 
 
 def format_events(events: list[dict[str, Any]]) -> str:
-    labels = {0: "今天", 1: "明天", 2: "后天"}
+    labels = {0: "今天", 1: "明天", 2: "後天"}
     lines = []
     for index, event in enumerate(events, start=1):
         lines.append(
@@ -551,23 +550,51 @@ def store_campaign(
 ) -> dict[str, str]:
     campaign_id = now.strftime("%Y-%m-%d")
     event_ids = [event["event_id"] for event in events]
+    candidate_events = ranked_events or events
+    base_rank = {
+        event["event_id"]: rank
+        for rank, event in enumerate(
+            sorted(
+                candidate_events,
+                key=lambda item: float(
+                    item.get("recommendation_score", item.get("quality_score", 0))
+                ),
+                reverse=True,
+            ),
+            start=1,
+        )
+    }
+    final_rank = {
+        event_id: rank for rank, event_id in enumerate(event_ids, start=1)
+    }
     campaign = {
         "campaign_id": campaign_id,
         "generated_at": now.isoformat(),
         "content": content,
         "shared_text": render_shared_text(content, mood_kaomoji),
         "selected_event_ids": event_ids,
+        "ranking_policy": {
+            "version": "1.1",
+            "method": "free_final_score_ranking",
+            "max_events": MAX_SOCIAL_EVENTS,
+            "home_base": "Boston University Charles River Campus",
+            "destination_worthy_bonus": 12,
+            "fixed_local_quota": False,
+        },
         "selection_decisions": [
             {
                 "event_id": event["event_id"],
-                "rank": rank,
+                "base_score_rank": base_rank[event["event_id"]],
+                "final_score_rank": rank,
+                "final_selection_rank": final_rank.get(event["event_id"]),
                 "selected": event["event_id"] in event_ids,
                 "selection_lane": event.get("selection_lane"),
                 "recommendation_score": event.get("recommendation_score"),
                 "recommendation": event.get("recommendation"),
+                "social_adjustments": event.get("social_adjustments"),
                 "social_score": event.get("social_score"),
             }
-            for rank, event in enumerate(ranked_events or events, start=1)
+            for rank, event in enumerate(candidate_events, start=1)
         ],
         "persona": {
             "id": load_persona()["id"],

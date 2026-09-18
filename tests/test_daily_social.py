@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import pathlib
 import sys
 import unittest
@@ -68,25 +69,93 @@ class DailySocialTests(unittest.TestCase):
             [event["event_id"] for event in ranked[: MODULE.MAX_SOCIAL_EVENTS]],
         )
 
-    def test_reserves_slot_for_destination_worthy_event(self):
-        ranked = [
+    def test_destination_worthy_event_gets_boost_without_local_quota(self):
+        now = datetime(2026, 9, 17, 7, tzinfo=ZoneInfo("America/New_York"))
+        events = [
             {
                 "event_id": f"local-{index}",
-                "social_score": 100 - index,
+                "name": f"Local {index}",
+                "date": "2026-09-17",
+                "recommendation_score": 90 - index,
                 "recommendation": {"destination_worthy": False},
             }
             for index in range(6)
         ]
-        destination = {
-            "event_id": "revere-sand-festival",
-            "social_score": 70,
-            "recommendation": {"destination_worthy": True},
+        events.append(
+            {
+                "event_id": "revere-sand-festival",
+                "name": "Revere Sand Sculpting Festival",
+                "date": "2026-09-17",
+                "recommendation_score": 80,
+                "recommendation": {"destination_worthy": True},
+            }
+        )
+        ranked = MODULE.rank_social_events({"events": events}, {}, now)
+        selected = MODULE.choose_social_events(ranked)
+        destination = next(
+            event for event in selected if event["event_id"] == "revere-sand-festival"
+        )
+        self.assertEqual(destination["social_adjustments"]["destination_worthy_bonus"], 12)
+        self.assertEqual(destination["selection_lane"], "destination_boost")
+
+    def test_campaign_stores_auditable_free_ranking(self):
+        original_s3 = MODULE.S3
+        MODULE.S3 = MagicMock()
+        now = datetime(2026, 9, 17, 7, tzinfo=ZoneInfo("America/New_York"))
+        ranked = [
+            {
+                "event_id": "revere-festival",
+                "recommendation_score": 80,
+                "social_score": 96,
+                "social_adjustments": {
+                    "timing_bonus": 4,
+                    "free_bonus": 0,
+                    "destination_worthy_bonus": 12,
+                },
+                "selection_lane": "destination_boost",
+            },
+            {
+                "event_id": "bu-concert",
+                "recommendation_score": 90,
+                "social_score": 94,
+                "social_adjustments": {
+                    "timing_bonus": 4,
+                    "free_bonus": 0,
+                    "destination_worthy_bonus": 0,
+                },
+                "selection_lane": "score_rank",
+            },
+        ]
+        try:
+            MODULE.store_campaign(
+                {
+                    "zh": {"title": "今日活動", "body": "今天的活動。"},
+                    "en": {"title": "Boston today", "body": "Today's events."},
+                    "hashtags": ["Boston"],
+                },
+                ranked,
+                {},
+                now,
+                ranked_events=ranked,
+            )
+            campaign = json.loads(MODULE.S3.put_object.call_args_list[0].kwargs["Body"])
+        finally:
+            MODULE.S3 = original_s3
+
+        self.assertFalse(campaign["ranking_policy"]["fixed_local_quota"])
+        decisions = {
+            decision["event_id"]: decision
+            for decision in campaign["selection_decisions"]
         }
-        selected = MODULE.choose_social_events([*ranked, destination])
-        self.assertEqual(len(selected), MODULE.MAX_SOCIAL_EVENTS)
-        self.assertIn(destination, selected)
-        self.assertEqual(destination["selection_lane"], "destination_worthy")
-        self.assertNotIn("local-4", {event["event_id"] for event in selected})
+        self.assertEqual(decisions["revere-festival"]["base_score_rank"], 2)
+        self.assertEqual(decisions["revere-festival"]["final_score_rank"], 1)
+        self.assertEqual(decisions["revere-festival"]["final_selection_rank"], 1)
+        self.assertEqual(
+            decisions["revere-festival"]["social_adjustments"][
+                "destination_worthy_bonus"
+            ],
+            12,
+        )
 
     def test_enforces_48_hour_cooldown(self):
         eastern = ZoneInfo("America/New_York")
