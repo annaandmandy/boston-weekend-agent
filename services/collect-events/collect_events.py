@@ -78,15 +78,15 @@ INNER_RING_CITIES = {
     "revere",
     "somerville",
 }
-DESTINATION_EVENT_TERMS = {
-    "carnival": "carnival",
-    "cultural festival": "cultural festival",
-    "fireworks": "fireworks",
-    "open studios": "open studios",
-    "parade": "parade",
-    "regatta": "regatta",
-    "sand sculpt": "sand sculpture festival",
-    "festival": "festival",
+DESTINATION_EVENT_PATTERNS = {
+    r"\bcarnival\b": "carnival",
+    r"\bcultural[\s-]+festival\b": "cultural festival",
+    r"\bfireworks?\b": "fireworks",
+    r"\bopen[\s-]+studios?\b": "open studios",
+    r"\bparade\b": "parade",
+    r"\bregatta\b": "regatta",
+    r"\bsand[\s-]+sculpt(?:ure|ing)?s?\b": "sand sculpture festival",
+    r"\bfestival\b": "festival",
 }
 
 # Official, structured community calendars. CivicPlus feeds use the same
@@ -328,13 +328,17 @@ def proximity_component(event: dict[str, Any]) -> tuple[float, float | None, str
 
 
 def destination_worthiness(event: dict[str, Any]) -> tuple[bool, list[str]]:
-    """Identify rare events that merit a dedicated discovery slot."""
+    """Identify distinctive events that merit a transparent ranking boost."""
     text = " ".join(
         str(event.get(field) or "")
         for field in ("name", "description", "category")
     ).lower()
     reasons = sorted(
-        {label for term, label in DESTINATION_EVENT_TERMS.items() if term in text}
+        {
+            label
+            for pattern, label in DESTINATION_EVENT_PATTERNS.items()
+            if re.search(pattern, text)
+        }
     )
     return bool(reasons), reasons
 

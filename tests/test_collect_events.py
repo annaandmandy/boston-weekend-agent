@@ -213,6 +213,17 @@ class CollectEventsTests(unittest.TestCase):
         self.assertTrue(result["destination_worthy"])
         self.assertIn("sand sculpture festival", result["destination_reasons"])
 
+    def test_regattabar_does_not_trigger_regatta_boost(self):
+        event = {
+            "name": "George Coleman Quintet",
+            "description": "Contact regattabar@example.com for group tickets.",
+            "category": "Music",
+            "location": "Regattabar",
+        }
+        worthy, reasons = MODULE.destination_worthiness(event)
+        self.assertFalse(worthy)
+        self.assertNotIn("regatta", reasons)
+
     def test_parse_ical_events_unfolds_and_filters_meetings(self):
         calendar = """BEGIN:VCALENDAR\r
 BEGIN:VEVENT\r
