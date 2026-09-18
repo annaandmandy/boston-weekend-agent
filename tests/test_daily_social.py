@@ -281,6 +281,16 @@ class DailySocialTests(unittest.TestCase):
         self.assertEqual(content["en"]["body"], "English copy")
         self.assertEqual(content["hashtags"], ["Boston", "週末去哪"])
 
+    def test_parser_preserves_raw_kaomoji_backslash_as_valid_json(self):
+        content = MODULE.parse_model_json(
+            r'''{
+                "zh": {"title": "今日活動", "body": "出門 \(≧▽≦)/"},
+                "en": {"title": "Today", "body": "Let's go \(≧▽≦)/"},
+                "hashtags": ["Boston"]
+            }'''
+        )
+        self.assertIn(r"\(≧▽≦)/", content["zh"]["body"])
+
     def test_prompt_requires_traditional_chinese(self):
         prompt_text = str(MODULE.build_prompt())
         self.assertIn("Traditional Chinese", prompt_text)
@@ -320,6 +330,62 @@ class DailySocialTests(unittest.TestCase):
                     "hashtags": ["Boston"]
                 }"""
             )
+
+    def test_generate_content_repairs_emoji_validation_failure_once(self):
+        responses = iter(
+            [
+                MagicMock(
+                    content=json.dumps(
+                        {
+                            "zh": {"title": "今日", "body": "先出門☀️"},
+                            "en": {"title": "Today", "body": "Go outside"},
+                            "hashtags": ["Boston"],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    usage_metadata={"total_tokens": 10},
+                ),
+                MagicMock(
+                    content=json.dumps(
+                        {
+                            "zh": {
+                                "title": "今日",
+                                "body": "先出門 〔•̀ᴗ•́〕و，再散步 (≧▽≦)✨。",
+                            },
+                            "en": {
+                                "title": "Today",
+                                "body": "Head out 〔´ᴗ`〕～ then wander (•̀ᴗ•́)✨.",
+                            },
+                            "hashtags": ["Boston"],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    usage_metadata={"total_tokens": 12},
+                ),
+            ]
+        )
+
+        class FakePrompt:
+            def __or__(self, model):
+                return self
+
+            def invoke(self, values):
+                return next(responses)
+
+        with patch("langchain_openai.ChatOpenAI"), patch.object(
+            MODULE, "get_openai_api_key", return_value="test-key"
+        ), patch.object(MODULE, "build_prompt", return_value=FakePrompt()), patch.object(
+            MODULE, "build_kaomoji_repair_prompt", return_value=FakePrompt()
+        ):
+            content, metadata = MODULE.generate_content(
+                [], datetime(2026, 9, 18, 7, tzinfo=ZoneInfo("America/New_York"))
+            )
+
+        self.assertNotIn("☀️", json.dumps(content, ensure_ascii=False))
+        self.assertNotIn("✨", json.dumps(content, ensure_ascii=False))
+        self.assertTrue(metadata["retried"])
+        self.assertEqual(metadata["openai_call_count"], 2)
+        self.assertEqual(metadata["token_usage"]["total_tokens"], 22)
 
     def test_accepts_contextual_kaomoji_inside_both_language_bodies(self):
         content = MODULE.parse_model_json(

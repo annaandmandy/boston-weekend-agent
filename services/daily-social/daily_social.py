@@ -673,10 +673,14 @@ Weekend report: {website_url}
     )
 
 
-def parse_model_json(content: Any) -> dict[str, Any]:
+def parse_model_json(
+    content: Any, *, sanitize_emoji: bool = False
+) -> dict[str, Any]:
     text = str(content).strip()
     text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\s*```$", "", text)
+    # Preserve raw kaomoji backslashes while making them valid JSON escapes.
+    text = re.sub(r'\\(?!["\\/bfnrtu])', r"\\\\", text)
     result = json.loads(text)
     for language in ("zh", "en"):
         localized = result.get(language)
@@ -692,7 +696,18 @@ def parse_model_json(content: Any) -> dict[str, Any]:
     result["hashtags"] = [str(tag).lstrip("#") for tag in hashtags]
     generated_text = json.dumps(result, ensure_ascii=False)
     if EMOJI_PATTERN.search(generated_text):
-        raise ValueError("Model response contained emoji")
+        if not sanitize_emoji:
+            raise ValueError("Model response contained emoji")
+        for language in ("zh", "en"):
+            for field in ("title", "body"):
+                result[language][field] = EMOJI_PATTERN.sub(
+                    "", result[language][field]
+                )
+        result["hashtags"] = [
+            EMOJI_PATTERN.sub("", tag).strip()
+            for tag in result["hashtags"]
+            if EMOJI_PATTERN.sub("", tag).strip()
+        ]
     return result
 
 
@@ -729,7 +744,7 @@ the draft. Do not add or remove an event. Do not add a signature or Unicode emoj
 Repair only the conversational voice: each language body must contain 2-3
 different kaomoji naturally inside sentences at genuine emotional turns. They
 must not be standalone lines, paragraph prefixes, or titles. Vary their shapes;
-examples of the range include 〔•̀ᴗ•́〕و, \\(≧▽≦)/, and (((o(*ﾟ▽ﾟ*)o))). Keep
+examples of the range include 〔•̀ᴗ•́〕و, (≧▽≦)ノ, and (((o(*ﾟ▽ﾟ*)o))). Keep
 natural Taiwan Traditional Chinese in `zh` and natural English in `en`.""",
             ),
             ("human", "Repair this draft JSON:\n{draft_json}"),
@@ -752,16 +767,16 @@ def generate_content(
         }
     )
     responses = [response]
-    content = parse_model_json(response.content)
     try:
+        content = parse_model_json(response.content)
         validate_contextual_kaomoji(content)
-    except ValueError as error:
-        LOGGER.warning("Retrying social voice contract: %s", error)
+    except (ValueError, json.JSONDecodeError) as error:
+        LOGGER.warning("Retrying social format/voice contract: %s", error)
         repaired = (build_kaomoji_repair_prompt() | model).invoke(
-            {"draft_json": json.dumps(content, ensure_ascii=False)}
+            {"draft_json": str(response.content)}
         )
         responses.append(repaired)
-        content = parse_model_json(repaired.content)
+        content = parse_model_json(repaired.content, sanitize_emoji=True)
         validate_contextual_kaomoji(content)
 
     stages = []
