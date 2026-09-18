@@ -752,21 +752,6 @@ def handle_introduction(event: dict[str, Any], now: datetime) -> dict[str, Any]:
             "Introduction publishing requires THREADS_PUBLISH_ENABLED=true"
         )
 
-    existing = load_json(THREADS_INTRODUCTION_KEY, default={})
-    if existing:
-        status = existing.get("status", "unknown")
-        if status == "published":
-            return {
-                "success": True,
-                "mode": "introduction",
-                "threads_publish_status": "already_published",
-                "thread_post_ids": existing.get("post_ids", []),
-            }
-        raise RuntimeError(
-            f"Threads introduction state is {status}; inspect "
-            f"{THREADS_INTRODUCTION_KEY} before retrying"
-        )
-
     claim = {
         "campaign_id": "bobo-introduction-v1",
         "status": "publishing",
