@@ -20,6 +20,8 @@ EventBridge Scheduler
         v
 AWS Step Functions
         |
+        +--> CloudWatch Logs (ERROR, 30-day retention)
+        |
         +--> Event collector Lambda
         |      +-- Ticketmaster Greater Boston radius search
         |      +-- City of Boston events RSS

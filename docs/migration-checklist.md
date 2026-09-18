@@ -14,7 +14,9 @@ functions without changing the historical S3 data.
   even though the report function already writes its own S3 objects.
 - The event Lambda still has a plaintext provider token environment variable.
 - The report Lambda still has a plaintext OpenAI key environment variable.
-- Step Functions execution logging and tracing are disabled.
+- Step Functions execution logging was disabled in the legacy workflow. The
+  migrated workflow now sends `ERROR` events and execution data to a dedicated
+  30-day CloudWatch Log Group; X-Ray tracing remains disabled.
 
 ## Safety gates
 
@@ -55,7 +57,7 @@ functions without changing the historical S3 data.
 - [ ] Make `LangChainReport` the terminal state.
 - [ ] Remove the duplicate final upload state.
 - [ ] Add retries for transient Lambda service failures.
-- [ ] Enable Step Functions logging after verifying the log group and IAM policy.
+- [x] Enable Step Functions logging after verifying the log group and IAM policy.
 - [ ] Run one manual execution and inspect every state.
 - [ ] Set collector horizon to ten days.
 - [ ] Create and directly test the daily social Lambda.

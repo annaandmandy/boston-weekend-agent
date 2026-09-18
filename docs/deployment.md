@@ -165,6 +165,25 @@ The new schedules use `America/New_York` and are documented in
    cannot continue making unnecessary LLM calls.
 5. Do not delete the old rule until the new schedules have run successfully.
 
+## Enable Step Functions execution logging
+
+Create `/aws/vendedlogs/states/BostonWeekendAgentWorkflow` as a Standard
+CloudWatch Log Group with a 30-day retention policy. Attach
+`infrastructure/iam/stepfunctions-logging-policy.json` to the state machine's
+execution role as an inline policy named `BostonWeekendStepFunctionsLogging`.
+
+Configure the Standard state machine with:
+
+- log level: `ERROR`;
+- include execution data: enabled;
+- destination: the Log Group ARN ending in `:*`.
+
+CloudWatch Logs delivery APIs require `Resource: "*"`; keep these permissions on
+the state machine execution role rather than the deployment user. A successful
+workflow produces no error events at `ERROR` level. Use the Step Functions
+execution history for successful runs and the Log Group for centralized failure
+details.
+
 ## Verification order
 
 1. Invoke the collector directly.
