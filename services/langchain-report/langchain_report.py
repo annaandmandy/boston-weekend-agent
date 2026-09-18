@@ -1117,7 +1117,12 @@ def generate_report(
             }
             for rank, event in enumerate(events, start=1)
         ],
-        "token_usage": writing_metadata["token_usage"],
+        "token_usage": sum_token_usage(
+            [
+                {"token_usage": ranking_metadata.get("token_usage", {})},
+                {"token_usage": writing_metadata["token_usage"]},
+            ]
+        ),
         "context": context,
     }
 
