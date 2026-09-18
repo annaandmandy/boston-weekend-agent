@@ -64,6 +64,12 @@ Daily social Lambda
         `-- Threads API (optional guarded auto-publish)
 ```
 
+Both ranking agents compare the complete eligible candidate set in one request
+and return only Bo's global top 10. A conservative offline token upper bound
+must remain below 50,000 before the request is sent; the current GPT-5.6 Luna
+context window is much larger, while ranking output is capped at 7,000 tokens.
+Malformed rankings may be retried once and every attempt is recorded.
+
 ## Repository layout
 
 ```text

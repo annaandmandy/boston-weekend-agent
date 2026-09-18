@@ -26,10 +26,10 @@ OPENAI_REASONING_EFFORT = os.environ.get("OPENAI_REASONING_EFFORT", "none")
 PROMPT_VERSION = os.environ.get(
     "REPORT_PROMPT_VERSION", "v3.4-bobo-kaomoji-contract"
 )
-RANKING_PROMPT_VERSION = "ai-semantic-ranking-v1"
+RANKING_PROMPT_VERSION = "ai-global-top-10-v2"
 BOBO_MEMORY_KEY = os.environ.get("BOBO_MEMORY_KEY", "agent/bobo-memory.json")
-RANKING_BATCH_SIZE = 15
-RANKING_FINALIST_LIMIT = 10
+RANKING_TOP_K = 10
+RANKING_INPUT_TOKEN_BUDGET = 50_000
 EASTERN = ZoneInfo("America/New_York")
 
 S3 = boto3.client("s3", region_name=AWS_REGION)
@@ -419,7 +419,8 @@ def build_ranking_prompt():
             (
                 "system",
                 """You are Bo, the semantic ranking judge for a Greater Boston
-weekend letter. Rank every supplied, eligible event together. Python has already
+weekend letter. Compare every supplied, eligible event together in one global
+decision. Python has already
 enforced availability and date rules; your role is to understand cultural and
 leisure meaning that simple code cannot.
 
@@ -428,10 +429,13 @@ visually distinctive, or community-defining event merits a trip. A landmark
 event such as Revere's sand sculpting festival may outrank routine nearby plans.
 Proximity is useful but is never a quota or veto. Do not invent significance.
 
-Score each event from 0 to 100. These dimensions must sum to the final score:
+Evaluate every candidate comparatively, then score each selected top event from
+0 to 100. These dimensions must sum to the final score:
 leisure_appeal 0-25, local_significance 0-25, rarity 0-20, value 0-10,
-proximity_fit 0-10, information_confidence 0-10. Return each event_id exactly
-once, best to worst, with Traditional Chinese and English reasons.
+proximity_fit 0-10, information_confidence 0-10. Return only the strongest
+{selection_count} events, best to worst, with Traditional Chinese and English
+reasons. Every returned event_id must come from the candidates and appear once.
+Do not return scores for candidates outside the selected top group.
 
 Return strict JSON only:
 {{"rankings":[{{"event_id":"...","score":0,"dimensions":{{"leisure_appeal":0,
@@ -448,7 +452,10 @@ Bo's reviewed long-term memory:
 {memory_json}
 
 Weekend candidates:
-{events_json}""",
+{events_json}
+
+Candidate count: {candidate_count}
+Required ranking count: {selection_count}""",
             ),
         ]
     )
@@ -481,7 +488,11 @@ def compact_ranking_events(events: list[dict[str, Any]]) -> str:
     return json.dumps(compact, ensure_ascii=False)
 
 
-def parse_ai_rankings(content: Any, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def parse_ai_rankings(
+    content: Any,
+    candidates: list[dict[str, Any]],
+    top_k: int = RANKING_TOP_K,
+) -> list[dict[str, Any]]:
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", str(content).strip(), flags=re.I)
     payload = json.loads(text)
     rankings = payload.get("rankings")
@@ -495,8 +506,19 @@ def parse_ai_rankings(content: Any, candidates: list[dict[str, Any]]) -> list[di
         normalized_event["event_id"] = event_id
         by_id[event_id] = normalized_event
     returned_ids = [str(item.get("event_id")) for item in rankings]
-    if len(returned_ids) != len(set(returned_ids)) or set(returned_ids) != set(by_id):
-        raise ValueError("AI ranking response must contain every candidate exactly once")
+    expected_count = min(top_k, len(by_id))
+    if len(returned_ids) != expected_count:
+        raise ValueError(
+            f"AI ranking response must contain exactly {expected_count} events"
+        )
+    if len(returned_ids) != len(set(returned_ids)):
+        raise ValueError("AI ranking response contained duplicate event IDs")
+    unknown_ids = set(returned_ids) - set(by_id)
+    if unknown_ids:
+        raise ValueError(
+            "AI ranking response contained unknown event IDs: "
+            + ", ".join(sorted(unknown_ids))
+        )
 
     limits = {
         "leisure_appeal": 25,
@@ -551,27 +573,63 @@ def parse_ai_rankings(content: Any, candidates: list[dict[str, Any]]) -> list[di
     return sorted(ranked, key=lambda item: item["priority_score"], reverse=True)
 
 
-def invoke_ranking_batch(
+def estimate_ranking_input_tokens(
+    candidates: list[dict[str, Any]], memory: dict[str, Any]
+) -> int:
+    prompt_text = "\n".join(
+        (
+            str(build_ranking_prompt()),
+            json.dumps(load_persona(), ensure_ascii=False),
+            json.dumps(memory, ensure_ascii=False),
+            compact_ranking_events(candidates),
+        )
+    )
+    # Byte-level tokenizers cannot produce more content tokens than UTF-8 bytes.
+    # Add a fixed allowance for chat-message framing so this remains a safe,
+    # offline upper bound even when tiktoken has not learned a new model name.
+    return len(prompt_text.encode("utf-8")) + 1024
+
+
+def invoke_ranking_attempt(
     model: Any,
     candidates: list[dict[str, Any]],
     memory: dict[str, Any],
-    stage: str,
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    attempt: int,
+) -> tuple[list[dict[str, Any]] | None, dict[str, Any]]:
+    selection_count = min(RANKING_TOP_K, len(candidates))
     result = (build_ranking_prompt() | model).invoke(
         {
             "persona_json": json.dumps(load_persona(), ensure_ascii=False),
             "memory_json": json.dumps(memory, ensure_ascii=False),
             "events_json": compact_ranking_events(candidates),
+            "candidate_count": len(candidates),
+            "selection_count": selection_count,
         }
     )
     usage = getattr(result, "usage_metadata", None) or getattr(
         result, "response_metadata", {}
     ).get("token_usage", {})
-    return parse_ai_rankings(result.content, candidates), {
-        "stage": stage,
+    stage = {
+        "stage": "global-top-10",
+        "attempt": attempt,
         "candidate_count": len(candidates),
+        "requested_count": selection_count,
         "token_usage": usage or {},
     }
+    try:
+        ranked = parse_ai_rankings(result.content, candidates)
+    except (ValueError, TypeError, json.JSONDecodeError) as error:
+        stage.update(
+            {
+                "status": "invalid",
+                "validation_error": str(error),
+                "response_excerpt": str(result.content)[:2000],
+            }
+        )
+        LOGGER.warning("Ranking attempt %d failed validation: %s", attempt, error)
+        return None, stage
+    stage["status"] = "valid"
+    return ranked, stage
 
 
 def sum_token_usage(stages: list[dict[str, Any]]) -> dict[str, int]:
@@ -596,58 +654,43 @@ def ai_rank_weekend_events(
             "prompt_version": RANKING_PROMPT_VERSION,
             "memory_version": memory.get("memory_version"),
             "candidate_count": 0,
+            "selected_count": 0,
+            "openai_call_count": 0,
             "token_usage": {},
             "status": "skipped_no_candidates",
         }
+
+    estimated_input_tokens = estimate_ranking_input_tokens(candidates, memory)
+    if estimated_input_tokens > RANKING_INPUT_TOKEN_BUDGET:
+        raise ValueError(
+            "Global ranking input exceeds the application safety budget: "
+            f"{estimated_input_tokens} > {RANKING_INPUT_TOKEN_BUDGET} tokens"
+        )
 
     model = ChatOpenAI(
         **chat_model_options(get_openai_api_key(), 0.2),
         max_tokens=7000,
     )
-    if len(candidates) <= RANKING_BATCH_SIZE:
-        ranked, stage = invoke_ranking_batch(model, candidates, memory, "single-pass")
-        stages = [stage]
-    else:
-        batches = [
-            candidates[index : index + RANKING_BATCH_SIZE]
-            for index in range(0, len(candidates), RANKING_BATCH_SIZE)
-        ]
-        finalist_count = max(1, RANKING_FINALIST_LIMIT // len(batches))
-        batch_rankings = []
-        finalists = []
-        stages = []
-        for index, batch in enumerate(batches, start=1):
-            batch_ranked, stage = invoke_ranking_batch(
-                model, batch, memory, f"batch-{index}"
-            )
-            stages.append(stage)
-            for event in batch_ranked:
-                event["batch_ai_ranking"] = dict(event["ai_ranking"])
-            batch_rankings.extend(batch_ranked)
-            finalists.extend(batch_ranked[:finalist_count])
-
-        final_ranked, final_stage = invoke_ranking_batch(
-            model, finalists, memory, "final"
-        )
-        stages.append(final_stage)
-        finalist_ids = {event["event_id"] for event in final_ranked}
-        remaining = sorted(
-            (
-                event
-                for event in batch_rankings
-                if event["event_id"] not in finalist_ids
-            ),
-            key=lambda event: event["priority_score"],
-            reverse=True,
-        )
-        ranked = final_ranked + remaining
+    stages = []
+    ranked = None
+    for attempt in (1, 2):
+        ranked, stage = invoke_ranking_attempt(model, candidates, memory, attempt)
+        stages.append(stage)
+        if ranked is not None:
+            break
+    if ranked is None:
+        LOGGER.error("Global ranking failed twice: %s", stages)
+        raise ValueError("AI global top-10 ranking failed validation twice")
 
     return ranked, {
         "model": OPENAI_MODEL,
         "prompt_version": RANKING_PROMPT_VERSION,
         "memory_version": memory.get("memory_version"),
         "candidate_count": len(candidates),
-        "strategy": "single-pass" if len(stages) == 1 else "batched-finalists",
+        "selected_count": len(ranked),
+        "strategy": "single-global-top-10",
+        "estimated_input_token_upper_bound": estimated_input_tokens,
+        "input_token_budget": RANKING_INPUT_TOKEN_BUDGET,
         "openai_call_count": len(stages),
         "stages": stages,
         "token_usage": sum_token_usage(stages),
