@@ -853,6 +853,8 @@ def finalize_language_report(
 ) -> str:
     persona = load_persona()
     title = EMOJI_PATTERN.sub("", section["title"]).strip()
+    title = re.sub(r"^#{1,6}\s*", "", title)
+    title = re.sub(r"^\*\*(.*?)\*\*$", r"\1", title).strip()
     body = EMOJI_PATTERN.sub("", section["body"]).strip()
     signoff = persona["signoff"]
     body = body.replace(signoff, "").strip()

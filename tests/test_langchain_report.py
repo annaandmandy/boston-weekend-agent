@@ -96,6 +96,14 @@ class LangChainReportTests(unittest.TestCase):
         self.assertTrue(rendered.startswith("⌖ˎˊ˗ 〔✦ᴗ✦〕ノ"))
         self.assertTrue(rendered.endswith("— 波波 ⌖ˎˊ˗ 〔•ᴗ•〕ゞ"))
 
+    def test_language_finalizer_normalizes_model_title_markdown(self):
+        rendered = MODULE.finalize_language_report(
+            {"title": "**週末來信**", "body": "先去散步。"},
+            "⌖ˎˊ˗ 〔✦ᴗ✦〕ノ",
+        )
+        self.assertIn("\n\n**週末來信**\n\n", rendered)
+        self.assertNotIn("****週末來信****", rendered)
+
     def test_parses_independent_language_reports(self):
         parsed = MODULE.parse_bilingual_report(
             __import__("json").dumps(
