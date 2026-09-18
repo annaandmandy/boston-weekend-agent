@@ -62,6 +62,12 @@ Daily social Lambda
         +-- Loads Bo's versioned persona and reviewed S3 memory
         +-- S3 social/latest.json and social/latest.txt
         `-- Threads API (optional guarded auto-publish)
+
+Website activity feedback
+        +-- React Activities explorer (anonymous reversible Like)
+        +-- API Gateway HTTP API with origin-restricted CORS and throttling
+        +-- Feedback Lambda validates IDs against the current S3 report
+        `-- DynamoDB stores atomic totals, browser vote state, and action history
 ```
 
 Both ranking agents compare the complete eligible candidate set in one request
@@ -77,6 +83,7 @@ services/
   collect-events/       Event aggregation and normalization Lambda
   langchain-report/     LLM report-generation Lambda
   daily-social/         Shared Threads/Xiaohongshu content Lambda
+  event-feedback/       Zero-LLM anonymous activity feedback Lambda
 infrastructure/
   iam/                  Least-privilege policy templates
   step-functions/       Target state-machine definition
@@ -104,6 +111,12 @@ variable. Lambda configuration stores only Secrets Manager ARNs:
 
 Each function receives permission to read only its own secret. See
 [`SECURITY.md`](SECURITY.md) for repository rules.
+
+Public activity feedback uses a random browser-local ID rather than a name,
+email address, or social account. The Lambda stores only its SHA-256 hash. One
+browser can hold one reversible vote per event; every state change is retained
+as an analytics action. This is a lightweight preference signal, not strong
+identity or anti-fraud verification.
 
 ## Local checks
 
@@ -134,6 +147,9 @@ docker buildx build --platform linux/amd64 --provenance=false --load \
 
 docker buildx build --platform linux/amd64 --provenance=false --load \
   -t boston-weekend-daily-social:local services/daily-social
+
+docker buildx build --platform linux/amd64 --provenance=false --load \
+  -t boston-weekend-event-feedback:local services/event-feedback
 ```
 
 ## Deployment
@@ -155,8 +171,12 @@ tests each Lambda independently before changing the production state machine.
   the website.
 - Each report archives the exact versioned inputs it used and writes a structured
   analytics manifest with model, prompt, token, input, and output lineage.
-- CloudFront exposes only `reports/weekend_summary.txt`; the S3 bucket and all
-  event, social, and analytics history remain private.
+- CloudFront exposes only the public report text/JSON objects used by the
+  website; the S3 bucket and all event, social, feedback, and analytics history
+  remain private.
+- Activity Like totals use DynamoDB transactional writes so the voter state,
+  aggregate count, and immutable action record change together. The feature
+  does not call an LLM.
 - Events are collected daily for a ten-day window. The full weekend workflow
   runs Thursday for an early planning edition and Friday for a refreshed edition.
 - One bilingual social post (Traditional Chinese first, English second) is generated daily
