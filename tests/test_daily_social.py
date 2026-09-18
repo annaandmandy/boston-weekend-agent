@@ -350,11 +350,11 @@ class DailySocialTests(unittest.TestCase):
                         {
                             "zh": {
                                 "title": "今日",
-                                "body": "先出門 〔•̀ᴗ•́〕و，再散步 (≧▽≦)。",
+                                "body": "先出門 〔•̀ᴗ•́〕و，再散步 (≧▽≦)✨。",
                             },
                             "en": {
                                 "title": "Today",
-                                "body": "Head out 〔´ᴗ`〕～ then wander (•̀ᴗ•́).",
+                                "body": "Head out 〔´ᴗ`〕～ then wander (•̀ᴗ•́)✨.",
                             },
                             "hashtags": ["Boston"],
                         },
@@ -382,6 +382,7 @@ class DailySocialTests(unittest.TestCase):
             )
 
         self.assertNotIn("☀️", json.dumps(content, ensure_ascii=False))
+        self.assertNotIn("✨", json.dumps(content, ensure_ascii=False))
         self.assertTrue(metadata["retried"])
         self.assertEqual(metadata["openai_call_count"], 2)
         self.assertEqual(metadata["token_usage"]["total_tokens"], 22)

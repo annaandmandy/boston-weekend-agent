@@ -673,7 +673,9 @@ Weekend report: {website_url}
     )
 
 
-def parse_model_json(content: Any) -> dict[str, Any]:
+def parse_model_json(
+    content: Any, *, sanitize_emoji: bool = False
+) -> dict[str, Any]:
     text = str(content).strip()
     text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\s*```$", "", text)
@@ -694,7 +696,18 @@ def parse_model_json(content: Any) -> dict[str, Any]:
     result["hashtags"] = [str(tag).lstrip("#") for tag in hashtags]
     generated_text = json.dumps(result, ensure_ascii=False)
     if EMOJI_PATTERN.search(generated_text):
-        raise ValueError("Model response contained emoji")
+        if not sanitize_emoji:
+            raise ValueError("Model response contained emoji")
+        for language in ("zh", "en"):
+            for field in ("title", "body"):
+                result[language][field] = EMOJI_PATTERN.sub(
+                    "", result[language][field]
+                )
+        result["hashtags"] = [
+            EMOJI_PATTERN.sub("", tag).strip()
+            for tag in result["hashtags"]
+            if EMOJI_PATTERN.sub("", tag).strip()
+        ]
     return result
 
 
@@ -763,7 +776,7 @@ def generate_content(
             {"draft_json": str(response.content)}
         )
         responses.append(repaired)
-        content = parse_model_json(repaired.content)
+        content = parse_model_json(repaired.content, sanitize_emoji=True)
         validate_contextual_kaomoji(content)
 
     stages = []
