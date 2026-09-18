@@ -28,6 +28,8 @@ class LangChainReportTests(unittest.TestCase):
         self.assertIn("450-650 English words", prompt_text)
         self.assertIn("weekend letter", prompt_text)
         self.assertIn("repetitive numbered list", prompt_text)
+        self.assertIn("Write them as raw URLs", prompt_text)
+        self.assertIn("Do not invent or", prompt_text)
 
     def test_daily_and_weekend_persona_files_match(self):
         daily_persona_path = (

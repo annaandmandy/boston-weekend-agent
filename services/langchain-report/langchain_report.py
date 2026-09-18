@@ -23,7 +23,7 @@ AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 BUCKET_NAME = os.environ.get("REPORT_BUCKET", "boston-weekend-agent-reports")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6-luna")
 OPENAI_REASONING_EFFORT = os.environ.get("OPENAI_REASONING_EFFORT", "none")
-PROMPT_VERSION = os.environ.get("REPORT_PROMPT_VERSION", "v3-bobo-bilingual")
+PROMPT_VERSION = os.environ.get("REPORT_PROMPT_VERSION", "v3.1-bobo-bilingual")
 EASTERN = ZoneInfo("America/New_York")
 
 S3 = boto3.client("s3", region_name=AWS_REGION)
@@ -473,6 +473,9 @@ enough verified material is available. In each language:
 - End with a small morning-to-evening route or two alternative moods, written as
   prose rather than a repetitive numbered list.
 - Use short paragraphs and bold section headings that this website can render.
+- Preserve only the supplied event URLs. Write them as raw URLs, not Markdown
+  links, because the current website renders only bold Markdown. Do not invent or
+  append a weekend-report URL; this report is already displayed on that page.
 
 Use a friendly, lively, lightly playful voice, like a local friend thinking
 through the weekend aloud. Sensory language may set a mood, but every factual
