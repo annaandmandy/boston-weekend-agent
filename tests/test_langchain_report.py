@@ -36,6 +36,8 @@ class LangChainReportTests(unittest.TestCase):
         self.assertIn("2-4 varied", prompt_text)
         self.assertIn("emotional punctuation", prompt_text)
         self.assertIn("fixed top expression", prompt_text.replace("\n", " "))
+        self.assertIn("optional flavor", prompt_text.replace("\n", " "))
+        self.assertIn("Taiwan-style zhuyin", prompt_text)
         prompt = MODULE.build_prompt()
         rendered = prompt.format(
             day_name="Friday",
