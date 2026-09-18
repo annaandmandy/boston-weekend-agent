@@ -6,7 +6,7 @@ shift the local publishing time.
 | Local time | Workflow | Output |
 | --- | --- | --- |
 | Daily 06:00 | Event collector | Today through the next ten days in `events/latest.json` |
-| Daily 07:00 | Daily social generator | One shared Threads/Xiaohongshu draft in `social/latest.json` and `.txt` |
+| Daily 07:00 | Daily social generator | One shared bilingual Threads/Xiaohongshu draft in `social/latest.json` and `.txt` |
 | Thursday 07:15 | Full weekend workflow | Early Friday-Sunday report with weather |
 | Friday 07:15 | Full weekend workflow | Revised report with fresh listings and weather |
 
@@ -39,8 +39,9 @@ explicit source status.
 ## Social cooldown
 
 The social generator selects events occurring today through two days ahead and
-excludes anything selected during the previous 48 hours. The generated title,
-body, hashtags, links, and event selection are shared by both platforms.
+excludes anything selected during the previous 48 hours. It produces Chinese
+copy first and matching English copy second. The bilingual text, hashtags,
+links, and event selection are shared by both platforms.
 
 Until the platform connections are completed:
 

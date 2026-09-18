@@ -1,4 +1,4 @@
-"""Generate one shared daily post for Threads and Xiaohongshu."""
+"""Generate one shared bilingual daily post for Threads and Xiaohongshu."""
 
 from __future__ import annotations
 
@@ -156,17 +156,22 @@ def build_prompt():
         [
             (
                 "system",
-                """You write one shared Chinese-language social post that will be used
+                """You write one shared bilingual social post that will be used
 unchanged on both Threads and Xiaohongshu. Use only facts supplied below. Never
 invent dates, times, prices, venues, availability, or cancellation status.
 
-Keep the body concise, friendly, and useful to people living around Greater
-Boston. Mention 3-5 activities when available, preserve their source links, and
-end with the weekend-report URL. Use plain text and raw URLs; do not use Markdown
-link syntax because the same copy is pasted directly into both platforms. Do
-not claim that an event is recommended from personal experience. Return strict
-JSON with exactly these keys:
-title (string), body (string), hashtags (array of strings).""",
+Write the Chinese version first and a natural English version second. Both
+versions must describe the same selected activities and must not introduce facts
+that appear in only one language. Keep each body concise, friendly, and useful
+to people living around Greater Boston. Mention 3-5 activities when available,
+preserve their source links, and end each body with the weekend-report URL. Use
+plain text and raw URLs; do not use Markdown link syntax because the same copy is
+published directly to both platforms. Do not claim that an event is recommended
+from personal experience.
+
+Return strict JSON with exactly these top-level keys: zh, en, hashtags. `zh` and
+`en` must each contain exactly `title` and `body` strings. `hashtags` must be an
+array of language-neutral or bilingual strings without leading # characters.""",
             ),
             (
                 "human",
@@ -187,10 +192,14 @@ def parse_model_json(content: Any) -> dict[str, Any]:
     text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\s*```$", "", text)
     result = json.loads(text)
-    if not isinstance(result.get("title"), str) or not isinstance(
-        result.get("body"), str
-    ):
-        raise ValueError("Model response did not contain title and body strings")
+    for language in ("zh", "en"):
+        localized = result.get(language)
+        if not isinstance(localized, dict) or not isinstance(
+            localized.get("title"), str
+        ) or not isinstance(localized.get("body"), str):
+            raise ValueError(
+                f"Model response did not contain {language} title and body strings"
+            )
     hashtags = result.get("hashtags")
     if not isinstance(hashtags, list):
         raise ValueError("Model response did not contain a hashtags array")
@@ -215,7 +224,14 @@ def generate_content(events: list[dict[str, Any]], now: datetime) -> dict[str, A
 
 def render_shared_text(content: dict[str, Any]) -> str:
     hashtags = " ".join(f"#{tag}" for tag in content["hashtags"])
-    return f"{content['title']}\n\n{content['body']}\n\n{hashtags}".strip()
+    return (
+        f"{content['zh']['title']}\n\n"
+        f"{content['zh']['body']}\n\n"
+        "—— English ——\n\n"
+        f"{content['en']['title']}\n\n"
+        f"{content['en']['body']}\n\n"
+        f"{hashtags}"
+    ).strip()
 
 
 def store_campaign(

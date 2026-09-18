@@ -40,7 +40,7 @@ AWS Step Functions
 Daily social Lambda
         +-- Reads the same normalized event snapshot
         +-- Enforces a 48-hour event cooldown
-        +-- Calls OpenAI once for shared copy
+        +-- Calls OpenAI once for shared Chinese and English copy
         `-- S3 social/latest.json and social/latest.txt
 ```
 
@@ -125,8 +125,9 @@ tests each Lambda independently before changing the production state machine.
   event, social, and analytics history remain private.
 - Events are collected daily for a ten-day window. The full weekend workflow
   runs Thursday for an early planning edition and Friday for a refreshed edition.
-- One social post is generated daily and reused unchanged for Threads and
-  Xiaohongshu, with a 48-hour event cooldown.
+- One bilingual social post (Chinese first, English second) is generated daily
+  and reused unchanged for Threads and Xiaohongshu, with a 48-hour event
+  cooldown.
 - The report Lambda reads source data directly from S3, keeping Step Functions
   payloads small.
 

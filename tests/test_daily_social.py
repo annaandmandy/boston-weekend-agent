@@ -66,13 +66,36 @@ class DailySocialTests(unittest.TestCase):
 
     def test_renders_one_identical_shared_post(self):
         content = {
-            "title": "Boston 今日活动",
-            "body": "今天可以去公园听音乐。",
+            "zh": {
+                "title": "Boston 今日活动",
+                "body": "今天可以去公园听音乐。",
+            },
+            "en": {
+                "title": "What's on in Boston today",
+                "body": "Listen to live music in the park today.",
+            },
             "hashtags": ["Boston", "波士顿生活"],
         }
         rendered = MODULE.render_shared_text(content)
         self.assertIn("Boston 今日活动", rendered)
+        self.assertLess(
+            rendered.index("Boston 今日活动"),
+            rendered.index("What's on in Boston today"),
+        )
+        self.assertIn("—— English ——", rendered)
         self.assertIn("#Boston #波士顿生活", rendered)
+
+    def test_parses_structured_bilingual_content(self):
+        content = MODULE.parse_model_json(
+            """{
+                "zh": {"title": "今日活动", "body": "中文内容"},
+                "en": {"title": "Today's events", "body": "English copy"},
+                "hashtags": ["#Boston", "周末去哪"]
+            }"""
+        )
+        self.assertEqual(content["zh"]["body"], "中文内容")
+        self.assertEqual(content["en"]["body"], "English copy")
+        self.assertEqual(content["hashtags"], ["Boston", "周末去哪"])
 
     def test_campaign_archive_key_is_immutable_for_retries(self):
         original_s3 = MODULE.S3
@@ -90,8 +113,8 @@ class DailySocialTests(unittest.TestCase):
         try:
             keys = MODULE.store_campaign(
                 {
-                    "title": "Boston 今日活动",
-                    "body": "今天的活动。",
+                    "zh": {"title": "Boston 今日活动", "body": "今天的活动。"},
+                    "en": {"title": "Boston today", "body": "Today's events."},
                     "hashtags": ["Boston"],
                 },
                 [{"event_id": "event-1"}],
