@@ -78,6 +78,16 @@ INNER_RING_CITIES = {
     "revere",
     "somerville",
 }
+DESTINATION_EVENT_TERMS = {
+    "carnival": "carnival",
+    "cultural festival": "cultural festival",
+    "fireworks": "fireworks",
+    "open studios": "open studios",
+    "parade": "parade",
+    "regatta": "regatta",
+    "sand sculpt": "sand sculpture festival",
+    "festival": "festival",
+}
 
 # Official, structured community calendars. CivicPlus feeds use the same
 # iCalendar format, so additional nearby towns can be added without another
@@ -317,6 +327,18 @@ def proximity_component(event: dict[str, Any]) -> tuple[float, float | None, str
     return 10.0, None, "distance not precisely known"
 
 
+def destination_worthiness(event: dict[str, Any]) -> tuple[bool, list[str]]:
+    """Identify rare events that merit a dedicated discovery slot."""
+    text = " ".join(
+        str(event.get(field) or "")
+        for field in ("name", "description", "category")
+    ).lower()
+    reasons = sorted(
+        {label for term, label in DESTINATION_EVENT_TERMS.items() if term in text}
+    )
+    return bool(reasons), reasons
+
+
 def calculate_recommendation(event: dict[str, Any], *, today: date | None = None) -> dict[str, Any]:
     """Produce an explainable 100-point score for recommendation analysis."""
     proximity, miles, proximity_reason = proximity_component(event)
@@ -375,6 +397,7 @@ def calculate_recommendation(event: dict[str, Any], *, today: date | None = None
 
     source = str(event.get("source") or "")
     source_confidence = 10.0 if source != "Ticketmaster" else 8.0
+    destination_worthy, destination_reasons = destination_worthiness(event)
     status = str(event.get("availability_status") or "unknown").lower()
     eligible = status not in {
         "canceled",
@@ -401,6 +424,8 @@ def calculate_recommendation(event: dict[str, Any], *, today: date | None = None
         "distance_miles": miles,
         "components": components,
         "reasons": [proximity_reason, interest_reason],
+        "destination_worthy": destination_worthy and eligible,
+        "destination_reasons": destination_reasons,
     }
 
 

@@ -254,7 +254,31 @@ def select_social_events(
     history: dict[str, Any],
     now: datetime,
 ) -> list[dict[str, Any]]:
-    return rank_social_events(events_data, history, now)[:MAX_SOCIAL_EVENTS]
+    return choose_social_events(rank_social_events(events_data, history, now))
+
+
+def choose_social_events(ranked: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Reserve one slot for a destination-worthy event when available."""
+    selected = ranked[:MAX_SOCIAL_EVENTS]
+    for event in selected:
+        event["selection_lane"] = "ranked"
+    if not selected or MAX_SOCIAL_EVENTS < 2:
+        return selected
+
+    selected_ids = {event["event_id"] for event in selected}
+    destination = next(
+        (
+            event
+            for event in ranked
+            if event["event_id"] not in selected_ids
+            and (event.get("recommendation") or {}).get("destination_worthy")
+        ),
+        None,
+    )
+    if destination:
+        destination["selection_lane"] = "destination_worthy"
+        selected[-1] = destination
+    return selected
 
 
 def format_events(events: list[dict[str, Any]]) -> str:
@@ -538,6 +562,7 @@ def store_campaign(
                 "event_id": event["event_id"],
                 "rank": rank,
                 "selected": event["event_id"] in event_ids,
+                "selection_lane": event.get("selection_lane"),
                 "recommendation_score": event.get("recommendation_score"),
                 "recommendation": event.get("recommendation"),
                 "social_score": event.get("social_score"),
@@ -613,7 +638,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     events_data = load_json("events/latest.json")
     history = load_json("social/history.json", default={})
     ranked = rank_social_events(events_data, history, now)
-    selected = ranked[:MAX_SOCIAL_EVENTS]
+    selected = choose_social_events(ranked)
     if not selected:
         raise RuntimeError("No eligible events remain after the 48-hour cooldown")
     mood_kaomoji = select_kaomoji(selected, now)

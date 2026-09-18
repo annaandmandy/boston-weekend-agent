@@ -24,6 +24,18 @@ proximity preference. Boston remains preferred, followed by inner Greater
 Boston; Natick and other outer locations need stronger interest value to rank
 above a nearby event.
 
+## Destination-worthy discovery lane
+
+Distance is a preference, not a veto. Daily social selection reserves one of
+five slots for the highest-ranked eligible destination-worthy event that would
+otherwise fall outside the local top five. Festivals, sand-sculpture events,
+parades, fireworks, carnivals, regattas, cultural festivals, and open-studios
+events can qualify. This keeps routine recommendations close to BU while making
+events such as the Revere International Sand Sculpting Festival visible.
+
+The campaign decision trail records `selection_lane=destination_worthy` so the
+effect of this policy can be measured separately from ordinary rank selection.
+
 Canceled, postponed, rescheduled, off-sale, and sold-out events receive an
 ineligible status and a zero recommendation score. They remain in immutable
 event history so status changes can be analyzed.

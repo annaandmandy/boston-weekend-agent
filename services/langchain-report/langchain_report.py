@@ -359,6 +359,8 @@ def filter_and_prioritize_events(
         ).lower()
         if any(term in event_text for term in ("festival", "fitness", "tour", "music", "dance")):
             score += 2
+        if (event.get("recommendation") or {}).get("destination_worthy"):
+            score += 12
         if any(term in event_text for term in ("abutters meeting", "office hours", "public meeting")):
             score -= 3
         event["priority_score"] = score

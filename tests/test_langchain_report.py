@@ -149,6 +149,27 @@ class LangChainReportTests(unittest.TestCase):
         events = MODULE.filter_and_prioritize_events(data, now)
         self.assertEqual([event["name"] for event in events], ["Open concert"])
 
+    def test_destination_worthy_event_gets_weekend_report_boost(self):
+        now = datetime(2026, 9, 17, 17, tzinfo=ZoneInfo("America/New_York"))
+        data = {
+            "events": [
+                {
+                    "name": "Nearby activity",
+                    "date": "2026-09-18",
+                    "recommendation_score": 90,
+                    "recommendation": {"destination_worthy": False},
+                },
+                {
+                    "name": "Revere Sand Sculpting Festival",
+                    "date": "2026-09-18",
+                    "recommendation_score": 80,
+                    "recommendation": {"destination_worthy": True},
+                },
+            ]
+        }
+        events = MODULE.filter_and_prioritize_events(data, now)
+        self.assertEqual(events[0]["name"], "Revere Sand Sculpting Festival")
+
     def test_normalizes_accidental_json_suffix(self):
         self.assertEqual(
             MODULE.normalize_report_text("Enjoy your weekend!\"}"),

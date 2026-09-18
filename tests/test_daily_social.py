@@ -63,7 +63,30 @@ class DailySocialTests(unittest.TestCase):
         selected = MODULE.select_social_events(data, {}, now)
         self.assertEqual(len(ranked), 7)
         self.assertEqual(len(selected), MODULE.MAX_SOCIAL_EVENTS)
-        self.assertEqual(selected, ranked[: MODULE.MAX_SOCIAL_EVENTS])
+        self.assertEqual(
+            [event["event_id"] for event in selected],
+            [event["event_id"] for event in ranked[: MODULE.MAX_SOCIAL_EVENTS]],
+        )
+
+    def test_reserves_slot_for_destination_worthy_event(self):
+        ranked = [
+            {
+                "event_id": f"local-{index}",
+                "social_score": 100 - index,
+                "recommendation": {"destination_worthy": False},
+            }
+            for index in range(6)
+        ]
+        destination = {
+            "event_id": "revere-sand-festival",
+            "social_score": 70,
+            "recommendation": {"destination_worthy": True},
+        }
+        selected = MODULE.choose_social_events([*ranked, destination])
+        self.assertEqual(len(selected), MODULE.MAX_SOCIAL_EVENTS)
+        self.assertIn(destination, selected)
+        self.assertEqual(destination["selection_lane"], "destination_worthy")
+        self.assertNotIn("local-4", {event["event_id"] for event in selected})
 
     def test_enforces_48_hour_cooldown(self):
         eastern = ZoneInfo("America/New_York")

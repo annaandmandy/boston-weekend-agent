@@ -200,6 +200,19 @@ class CollectEventsTests(unittest.TestCase):
         self.assertFalse(result["eligible"])
         self.assertEqual(result["score"], 0)
 
+    def test_revere_sand_sculpting_is_destination_worthy(self):
+        event = {
+            "name": "Revere International Sand Sculpting Festival",
+            "date": "2026-09-19",
+            "city": "Revere",
+            "source": "Revere Community",
+        }
+        result = MODULE.calculate_recommendation(
+            event, today=date(2026, 9, 17)
+        )
+        self.assertTrue(result["destination_worthy"])
+        self.assertIn("sand sculpture festival", result["destination_reasons"])
+
     def test_parse_ical_events_unfolds_and_filters_meetings(self):
         calendar = """BEGIN:VCALENDAR\r
 BEGIN:VEVENT\r
