@@ -26,6 +26,8 @@ OPENAI_REASONING_EFFORT = os.environ.get("OPENAI_REASONING_EFFORT", "none")
 PROMPT_VERSION = os.environ.get("REPORT_PROMPT_VERSION", "v3.1-bobo-bilingual")
 RANKING_PROMPT_VERSION = "ai-semantic-ranking-v1"
 BOBO_MEMORY_KEY = os.environ.get("BOBO_MEMORY_KEY", "agent/bobo-memory.json")
+RANKING_BATCH_SIZE = 15
+RANKING_FINALIST_LIMIT = 14
 EASTERN = ZoneInfo("America/New_York")
 
 S3 = boto3.client("s3", region_name=AWS_REGION)
@@ -540,6 +542,40 @@ def parse_ai_rankings(content: Any, candidates: list[dict[str, Any]]) -> list[di
     return sorted(ranked, key=lambda item: item["priority_score"], reverse=True)
 
 
+def invoke_ranking_batch(
+    model: Any,
+    candidates: list[dict[str, Any]],
+    memory: dict[str, Any],
+    stage: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    result = (build_ranking_prompt() | model).invoke(
+        {
+            "persona_json": json.dumps(load_persona(), ensure_ascii=False),
+            "memory_json": json.dumps(memory, ensure_ascii=False),
+            "events_json": compact_ranking_events(candidates),
+        }
+    )
+    usage = getattr(result, "usage_metadata", None) or getattr(
+        result, "response_metadata", {}
+    ).get("token_usage", {})
+    return parse_ai_rankings(result.content, candidates), {
+        "stage": stage,
+        "candidate_count": len(candidates),
+        "token_usage": usage or {},
+    }
+
+
+def sum_token_usage(stages: list[dict[str, Any]]) -> dict[str, int]:
+    keys = ("input_tokens", "output_tokens", "total_tokens")
+    return {
+        key: sum(
+            int((stage.get("token_usage") or {}).get(key, 0) or 0)
+            for stage in stages
+        )
+        for key in keys
+    }
+
+
 def ai_rank_weekend_events(
     candidates: list[dict[str, Any]], memory: dict[str, Any]
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -559,22 +595,53 @@ def ai_rank_weekend_events(
         **chat_model_options(get_openai_api_key(), 0.2),
         max_tokens=7000,
     )
-    result = (build_ranking_prompt() | model).invoke(
-        {
-            "persona_json": json.dumps(load_persona(), ensure_ascii=False),
-            "memory_json": json.dumps(memory, ensure_ascii=False),
-            "events_json": compact_ranking_events(candidates),
-        }
-    )
-    usage = getattr(result, "usage_metadata", None) or getattr(
-        result, "response_metadata", {}
-    ).get("token_usage", {})
-    return parse_ai_rankings(result.content, candidates), {
+    if len(candidates) <= RANKING_BATCH_SIZE:
+        ranked, stage = invoke_ranking_batch(model, candidates, memory, "single-pass")
+        stages = [stage]
+    else:
+        batches = [
+            candidates[index : index + RANKING_BATCH_SIZE]
+            for index in range(0, len(candidates), RANKING_BATCH_SIZE)
+        ]
+        finalist_count = max(1, RANKING_FINALIST_LIMIT // len(batches))
+        batch_rankings = []
+        finalists = []
+        stages = []
+        for index, batch in enumerate(batches, start=1):
+            batch_ranked, stage = invoke_ranking_batch(
+                model, batch, memory, f"batch-{index}"
+            )
+            stages.append(stage)
+            for event in batch_ranked:
+                event["batch_ai_ranking"] = dict(event["ai_ranking"])
+            batch_rankings.extend(batch_ranked)
+            finalists.extend(batch_ranked[:finalist_count])
+
+        final_ranked, final_stage = invoke_ranking_batch(
+            model, finalists, memory, "final"
+        )
+        stages.append(final_stage)
+        finalist_ids = {event["event_id"] for event in final_ranked}
+        remaining = sorted(
+            (
+                event
+                for event in batch_rankings
+                if event["event_id"] not in finalist_ids
+            ),
+            key=lambda event: event["priority_score"],
+            reverse=True,
+        )
+        ranked = final_ranked + remaining
+
+    return ranked, {
         "model": OPENAI_MODEL,
         "prompt_version": RANKING_PROMPT_VERSION,
         "memory_version": memory.get("memory_version"),
         "candidate_count": len(candidates),
-        "token_usage": usage or {},
+        "strategy": "single-pass" if len(stages) == 1 else "batched-finalists",
+        "openai_call_count": len(stages),
+        "stages": stages,
+        "token_usage": sum_token_usage(stages),
     }
 
 
@@ -865,7 +932,7 @@ def generate_report(
             "mood_kaomoji": mood_kaomoji,
         },
         "ranking": ranking_metadata,
-        "openai_call_count": 2 if candidates else 1,
+        "openai_call_count": ranking_metadata.get("openai_call_count", 0) + 1,
         "ranked_events": [
             {
                 "event_id": event.get("event_id"),

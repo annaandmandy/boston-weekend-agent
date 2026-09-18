@@ -3,7 +3,7 @@ import pathlib
 import sys
 import unittest
 from datetime import datetime
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
 
@@ -150,6 +150,39 @@ class LangChainReportTests(unittest.TestCase):
     def test_weekend_ranking_reserves_output_for_all_candidates(self):
         source = MODULE_PATH.read_text(encoding="utf-8")
         self.assertIn("max_tokens=7000", source)
+
+    def test_large_candidate_set_uses_batched_finalists(self):
+        candidates = [
+            {"event_id": f"event-{index}", "name": f"Event {index}"}
+            for index in range(26)
+        ]
+        calls = []
+
+        def fake_rank(_model, batch, _memory, stage):
+            calls.append((stage, len(batch)))
+            ranked = []
+            for score, event in enumerate(reversed(batch), start=1):
+                ranked_event = dict(event)
+                ranked_event["priority_score"] = 100 - score
+                ranked_event["ai_ranking"] = {"score": 100 - score}
+                ranked.append(ranked_event)
+            return ranked, {
+                "stage": stage,
+                "candidate_count": len(batch),
+                "token_usage": {"total_tokens": len(batch)},
+            }
+
+        with patch.object(MODULE, "get_openai_api_key", return_value="test"), patch(
+            "langchain_openai.ChatOpenAI"
+        ), patch.object(MODULE, "invoke_ranking_batch", side_effect=fake_rank):
+            ranked, metadata = MODULE.ai_rank_weekend_events(candidates, {})
+
+        self.assertEqual(calls, [("batch-1", 15), ("batch-2", 11), ("final", 14)])
+        self.assertEqual(len(ranked), 26)
+        self.assertEqual(len({event["event_id"] for event in ranked}), 26)
+        self.assertEqual(metadata["strategy"], "batched-finalists")
+        self.assertEqual(metadata["openai_call_count"], 3)
+        self.assertEqual(metadata["token_usage"]["total_tokens"], 40)
 
     def test_legacy_model_keeps_temperature(self):
         original_model = MODULE.OPENAI_MODEL
