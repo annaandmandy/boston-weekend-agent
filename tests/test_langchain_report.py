@@ -33,6 +33,9 @@ class LangChainReportTests(unittest.TestCase):
         self.assertIn("temperatures only in °C", prompt_text)
         self.assertIn("temperatures only in °F", prompt_text)
         self.assertIn("root object must contain keys", prompt_text)
+        self.assertIn("2-4 varied", prompt_text)
+        self.assertIn("emotional punctuation", prompt_text)
+        self.assertIn("fixed top expression", prompt_text.replace("\n", " "))
         prompt = MODULE.build_prompt()
         rendered = prompt.format(
             day_name="Friday",
@@ -103,6 +106,18 @@ class LangChainReportTests(unittest.TestCase):
         )
         self.assertIn("\n\n**週末來信**\n\n", rendered)
         self.assertNotIn("****週末來信****", rendered)
+
+    def test_language_finalizer_keeps_inline_kaomoji_and_fixed_identity_anchors(self):
+        rendered = MODULE.finalize_language_report(
+            {
+                "title": "週末來信",
+                "body": "天氣很配合 〔•̀ᴗ•́〕و 可以出門。",
+            },
+            "⌖ˎˊ˗ 〔✦ᴗ✦〕ノ",
+        )
+        self.assertTrue(rendered.startswith("⌖ˎˊ˗ 〔✦ᴗ✦〕ノ"))
+        self.assertIn("天氣很配合 〔•̀ᴗ•́〕و 可以出門。", rendered)
+        self.assertTrue(rendered.endswith("— 波波 Bo ⌖ˎˊ˗ 〔•ᴗ•〕ゞ"))
 
     def test_parses_independent_language_reports(self):
         parsed = MODULE.parse_bilingual_report(

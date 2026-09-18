@@ -517,8 +517,14 @@ Mention 3-5 activities when available, explain why each fits the day's story,
 preserve their source links, and end each body with the weekend-report URL. Use
 plain text and raw URLs; do not use Markdown
 link syntax because the same copy is published directly to both platforms. Do not
-claim that an event is recommended from personal experience. Do not place emoji
-or kaomoji in the generated fields; the application adds Bo's chosen expressions.
+claim that an event is recommended from personal experience. Never use Unicode
+emoji. In each language body, naturally place 2-3 varied kaomoji inside sentences
+at real emotional turns: delight at a rare find, playful indecision, weather
+relief, or a cautious aside when details are incomplete. Treat them like emotional
+punctuation, not standalone decorations or paragraph prefixes. Include at most
+one conversational parenthetical aside per language. Do not put kaomoji in titles
+and do not generate a signature; the application separately preserves Bo's
+fixed top expression and fixed signed expression.
 
 Return strict JSON with exactly these top-level keys: zh, en, hashtags. `zh` and
 `en` must each contain exactly `title` and `body` strings. `hashtags` must be an
@@ -580,7 +586,7 @@ def generate_content(
     ).get("token_usage", {})
     return parse_model_json(response.content), {
         "model": OPENAI_MODEL,
-        "prompt_version": "bobo-social-story-v2",
+        "prompt_version": "bobo-social-story-v3",
         "token_usage": usage or {},
     }
 
