@@ -176,6 +176,38 @@ class DailySocialTests(unittest.TestCase):
         )
         self.assertEqual(campaign["openai_call_count"], 2)
 
+    def test_ai_ranking_clamps_dimension_overflow_and_records_warning(self):
+        response = json.dumps(
+            {
+                "rankings": [
+                    {
+                        "event_id": "event-1",
+                        "score": 110,
+                        "dimensions": {
+                            "leisure_appeal": 30,
+                            "local_significance": 25,
+                            "rarity": 20,
+                            "value": 10,
+                            "proximity_fit": 10,
+                            "information_confidence": 15,
+                        },
+                        "destination_worthy": True,
+                        "significance_signals": [],
+                        "reason_zh": "测试",
+                        "reason_en": "Test",
+                    }
+                ]
+            }
+        )
+        ranked = MODULE.parse_ai_rankings(
+            response, [{"event_id": "event-1", "name": "Event"}]
+        )
+        self.assertEqual(ranked[0]["ai_ranking"]["score"], 100)
+        self.assertEqual(
+            ranked[0]["ai_ranking"]["raw_dimensions"]["leisure_appeal"], 30
+        )
+        self.assertTrue(ranked[0]["ai_ranking"]["normalization_warnings"])
+
     def test_enforces_48_hour_cooldown(self):
         eastern = ZoneInfo("America/New_York")
         now = datetime(2026, 9, 17, 7, tzinfo=eastern)

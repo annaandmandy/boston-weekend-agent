@@ -501,20 +501,33 @@ def parse_ai_rankings(content: Any, candidates: list[dict[str, Any]]) -> list[di
         dimensions = item.get("dimensions")
         if not isinstance(dimensions, dict):
             raise ValueError(f"AI ranking dimensions missing for {event_id}")
+        raw_dimensions = {}
         normalized = {}
+        warnings = []
         for name, maximum in limits.items():
-            value = float(dimensions.get(name, -1))
-            if not 0 <= value <= maximum:
-                raise ValueError(f"AI ranking dimension {name} is invalid for {event_id}")
+            if name not in dimensions:
+                raise ValueError(f"AI ranking dimension {name} is missing for {event_id}")
+            raw_value = float(dimensions[name])
+            raw_dimensions[name] = raw_value
+            value = min(max(raw_value, 0), maximum)
+            if value != raw_value:
+                warnings.append(
+                    f"{name} clamped from {raw_value:g} to {value:g}"
+                )
             normalized[name] = value
         calculated_score = round(sum(normalized.values()), 2)
-        if abs(calculated_score - float(item.get("score", calculated_score))) > 0.01:
-            raise ValueError(f"AI ranking score does not match dimensions for {event_id}")
+        supplied_score = float(item.get("score", calculated_score))
+        if abs(calculated_score - supplied_score) > 0.01:
+            warnings.append(
+                f"total recomputed from {supplied_score:g} to {calculated_score:g}"
+            )
 
         event = dict(by_id[event_id])
         event["ai_ranking"] = {
             "score": calculated_score,
             "dimensions": normalized,
+            "raw_dimensions": raw_dimensions,
+            "normalization_warnings": warnings,
             "destination_worthy": bool(item.get("destination_worthy")),
             "significance_signals": [
                 str(signal) for signal in item.get("significance_signals", [])
