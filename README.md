@@ -119,6 +119,8 @@ tests each Lambda independently before changing the production state machine.
   the website.
 - Each report archives the exact versioned inputs it used and writes a structured
   analytics manifest with model, prompt, token, input, and output lineage.
+- CloudFront exposes only `reports/weekend_summary.txt`; the S3 bucket and all
+  event, social, and analytics history remain private.
 - Events are collected daily for a ten-day window. The full weekend workflow
   runs Thursday for an early planning edition and Friday for a refreshed edition.
 - One social post is generated daily and reused unchanged for Threads and

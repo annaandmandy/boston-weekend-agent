@@ -96,6 +96,26 @@ After direct invocation, verify that one new directory exists under
 inputs, `effective_event_changes.json`, `report.txt`, and `report.json`. Inspect
 the manifest's source VersionIds and ETags before enabling the schedule.
 
+## Public report delivery
+
+Keep the report bucket private. The website reads only the current report
+through a CloudFront distribution with an S3 Origin Access Control (OAC):
+
+```text
+Browser -> CloudFront -> reports/weekend_summary.txt
+```
+
+The production distribution is `EBSSO01S4DVXI` at
+`d2ugiuoady5eh5.cloudfront.net`. It uses the managed `CachingDisabled` policy so
+new Thursday and Friday reports are visible immediately, plus the managed
+`SimpleCORS` response headers policy for browser access.
+
+Apply `infrastructure/cloudfront/report-bucket-policy.json` after replacing
+`${CLOUDFRONT_DISTRIBUTION_ARN}`. The S3 resource must remain the single exact
+`reports/weekend_summary.txt` object; do not widen it to `reports/*` or the
+whole bucket. Verify the report path returns HTTP 200 and paths under `events/`,
+`social/`, and `analytics/` return HTTP 403 through the distribution.
+
 ## Build the daily social generator
 
 ```bash
