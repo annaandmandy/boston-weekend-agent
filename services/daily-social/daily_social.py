@@ -637,7 +637,7 @@ def render_threads_introduction() -> str:
         "I scout things worth doing around Greater Boston—starting near BU, but "
         "traveling farther for rare local traditions. Follow for daily ideas and "
         "a Thursday weekend letter, refreshed Friday.\n\n"
-        "— 波波 ⌖ˎˊ˗ 〔•ᴗ•〕ゞ"
+        "— 波波 Bo ⌖ˎˊ˗ 〔•ᴗ•〕ゞ"
     )
 
 

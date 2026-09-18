@@ -94,7 +94,7 @@ class LangChainReportTests(unittest.TestCase):
         )
         self.assertNotIn("☀️", rendered)
         self.assertTrue(rendered.startswith("⌖ˎˊ˗ 〔✦ᴗ✦〕ノ"))
-        self.assertTrue(rendered.endswith("— 波波 ⌖ˎˊ˗ 〔•ᴗ•〕ゞ"))
+        self.assertTrue(rendered.endswith("— 波波 Bo ⌖ˎˊ˗ 〔•ᴗ•〕ゞ"))
 
     def test_language_finalizer_normalizes_model_title_markdown(self):
         rendered = MODULE.finalize_language_report(
