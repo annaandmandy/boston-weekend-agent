@@ -368,6 +368,47 @@ class DailySocialTests(unittest.TestCase):
         finally:
             MODULE.THREADS_PUBLISH_ENABLED = original
 
+    def test_introduction_claim_does_not_require_s3_list_or_read(self):
+        original = MODULE.THREADS_PUBLISH_ENABLED
+        MODULE.THREADS_PUBLISH_ENABLED = True
+        credentials = {
+            "THREADS_USER_ID": "user-1",
+            "THREADS_ACCESS_TOKEN": "token",
+            "THREADS_USERNAME": "bostonweekendagent",
+        }
+        try:
+            with patch.object(MODULE, "load_json") as load_json, patch.object(
+                MODULE, "write_publication_state"
+            ) as write_state, patch.object(
+                MODULE, "get_threads_credentials", return_value=credentials
+            ), patch.object(
+                MODULE, "refresh_threads_token_if_needed", return_value=credentials
+            ), patch.object(
+                MODULE, "auto_publish_threads_text", return_value="post-1"
+            ):
+                result = MODULE.handle_introduction(
+                    {"mode": "introduction", "publish": True},
+                    datetime(2026, 9, 18, 8, tzinfo=ZoneInfo("America/New_York")),
+                )
+        finally:
+            MODULE.THREADS_PUBLISH_ENABLED = original
+
+        load_json.assert_not_called()
+        self.assertTrue(write_state.call_args_list[0].kwargs["claim"])
+        self.assertEqual(result["threads"]["status"], "published")
+
+    def test_introduction_uses_meta_text_auto_publish(self):
+        credentials = {"THREADS_ACCESS_TOKEN": "secret-token"}
+        with patch.object(
+            MODULE, "threads_request_json", return_value={"id": "post-1"}
+        ) as request:
+            post_id = MODULE.auto_publish_threads_text("Hello", credentials)
+
+        self.assertEqual(post_id, "post-1")
+        self.assertEqual(request.call_args.args[0], f"{MODULE.THREADS_API_BASE}/me/threads")
+        self.assertEqual(request.call_args.kwargs["data"]["auto_publish_text"], "true")
+        self.assertEqual(request.call_args.kwargs["data"]["media_type"], "TEXT")
+
     def test_campaign_archive_key_is_immutable_for_retries(self):
         original_s3 = MODULE.S3
         MODULE.S3 = MagicMock()

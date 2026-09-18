@@ -192,7 +192,7 @@ Before enabling the daily schedule, preview Bo's fixed bilingual introduction:
 It uses zero OpenAI calls and includes the public Weekly Report link. After
 review, set `THREADS_PUBLISH_ENABLED=true` and invoke with
 `{"mode":"introduction","publish":true}`. Its separate idempotency record is
-`social/publications/threads/introduction.json`, so it cannot collide with a
+`social/publications/threads/introduction-v2.json`, so it cannot collide with a
 daily post. Publish the introduction before enabling the recurring social
 schedule.
 

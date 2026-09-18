@@ -3,7 +3,7 @@ import pathlib
 import sys
 import unittest
 from datetime import datetime
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
 
@@ -23,13 +23,34 @@ class LangChainReportTests(unittest.TestCase):
     def test_weekend_prompt_is_bilingual_bobo_letter(self):
         prompt_text = str(MODULE.build_prompt())
         self.assertIn("波波 Bo", prompt_text)
-        self.assertIn("Traditional Chinese version comes first", prompt_text)
+        self.assertIn("natural Taiwan Traditional", prompt_text)
         self.assertIn("700-1000 Traditional Chinese characters", prompt_text)
         self.assertIn("450-650 English words", prompt_text)
         self.assertIn("weekend letter", prompt_text)
         self.assertIn("repetitive numbered list", prompt_text)
         self.assertIn("Write them as raw URLs", prompt_text)
         self.assertIn("Do not invent or", prompt_text)
+        self.assertIn("temperatures only in °C", prompt_text)
+        self.assertIn("temperatures only in °F", prompt_text)
+        self.assertIn("root object must contain keys", prompt_text)
+        prompt = MODULE.build_prompt()
+        rendered = prompt.format(
+            day_name="Friday",
+            date="2026-09-18",
+            time="08:00",
+            time_of_day="morning",
+            weekend_status="weekend",
+            holiday_context="None",
+            edition="friday-update",
+            best_day="Saturday",
+            best_time="afternoon",
+            temperature_zh="20°C",
+            temperature_en="68°F",
+            rain_chance="0%",
+            events="Events",
+            event_changes="No changes",
+        )
+        self.assertIn("`zh` and `en`", rendered)
 
     def test_daily_and_weekend_persona_files_match(self):
         daily_persona_path = (
@@ -75,6 +96,69 @@ class LangChainReportTests(unittest.TestCase):
         self.assertTrue(rendered.startswith("⌖ˎˊ˗ 〔✦ᴗ✦〕ノ"))
         self.assertTrue(rendered.endswith("— 波波 ⌖ˎˊ˗ 〔•ᴗ•〕ゞ"))
 
+    def test_language_finalizer_normalizes_model_title_markdown(self):
+        rendered = MODULE.finalize_language_report(
+            {"title": "**週末來信**", "body": "先去散步。"},
+            "⌖ˎˊ˗ 〔✦ᴗ✦〕ノ",
+        )
+        self.assertIn("\n\n**週末來信**\n\n", rendered)
+        self.assertNotIn("****週末來信****", rendered)
+
+    def test_parses_independent_language_reports(self):
+        parsed = MODULE.parse_bilingual_report(
+            __import__("json").dumps(
+                {
+                    "zh": {"title": "週末來信", "body": "氣溫 20°C。"},
+                    "en": {"title": "Weekend Letter", "body": "It is 68°F."},
+                }
+            )
+        )
+        self.assertEqual(parsed["zh"]["title"], "週末來信")
+        self.assertEqual(parsed["en"]["body"], "It is 68°F.")
+
+    def test_converts_celsius_weather_text_to_fahrenheit(self):
+        self.assertEqual(
+            MODULE.fahrenheit_temperature_text("16.4°C (13.7-20.8°C)"),
+            "61.5°F (56.7-69.4°F)",
+        )
+
+    def test_store_report_writes_localized_json(self):
+        original_s3 = MODULE.S3
+        mock_s3 = MagicMock()
+        MODULE.S3 = mock_s3
+        now = datetime(2026, 9, 18, 7, tzinfo=ZoneInfo("America/New_York"))
+        result = {
+            "report": "legacy combined report",
+            "generated_at": now.isoformat(),
+            "edition": "friday-update",
+            "languages": {
+                "zh": {
+                    "locale": "zh-TW",
+                    "temperature_unit": "C",
+                    "markdown": "氣溫 20°C",
+                },
+                "en": {
+                    "locale": "en-US",
+                    "temperature_unit": "F",
+                    "markdown": "Temperature 68°F",
+                },
+            },
+        }
+        try:
+            keys = MODULE.store_report(result, now)
+        finally:
+            MODULE.S3 = original_s3
+
+        self.assertEqual(keys["latest_json"], "reports/weekend_summary.json")
+        latest_json_call = next(
+            call
+            for call in mock_s3.put_object.call_args_list
+            if call.kwargs["Key"] == "reports/weekend_summary.json"
+        )
+        payload = __import__("json").loads(latest_json_call.kwargs["Body"])
+        self.assertEqual(payload["languages"]["zh"]["temperature_unit"], "C")
+        self.assertEqual(payload["languages"]["en"]["temperature_unit"], "F")
+
     def test_luna_uses_reasoning_effort_without_temperature(self):
         original_model = MODULE.OPENAI_MODEL
         original_effort = MODULE.OPENAI_REASONING_EFFORT
@@ -88,6 +172,43 @@ class LangChainReportTests(unittest.TestCase):
 
         self.assertEqual(options["reasoning_effort"], "none")
         self.assertNotIn("temperature", options)
+
+    def test_weekend_ranking_reserves_output_for_all_candidates(self):
+        source = MODULE_PATH.read_text(encoding="utf-8")
+        self.assertIn("max_tokens=7000", source)
+
+    def test_large_candidate_set_uses_batched_finalists(self):
+        candidates = [
+            {"event_id": f"event-{index}", "name": f"Event {index}"}
+            for index in range(26)
+        ]
+        calls = []
+
+        def fake_rank(_model, batch, _memory, stage):
+            calls.append((stage, len(batch)))
+            ranked = []
+            for score, event in enumerate(reversed(batch), start=1):
+                ranked_event = dict(event)
+                ranked_event["priority_score"] = 100 - score
+                ranked_event["ai_ranking"] = {"score": 100 - score}
+                ranked.append(ranked_event)
+            return ranked, {
+                "stage": stage,
+                "candidate_count": len(batch),
+                "token_usage": {"total_tokens": len(batch)},
+            }
+
+        with patch.object(MODULE, "get_openai_api_key", return_value="test"), patch(
+            "langchain_openai.ChatOpenAI"
+        ), patch.object(MODULE, "invoke_ranking_batch", side_effect=fake_rank):
+            ranked, metadata = MODULE.ai_rank_weekend_events(candidates, {})
+
+        self.assertEqual(calls, [("batch-1", 15), ("batch-2", 11), ("final", 10)])
+        self.assertEqual(len(ranked), 26)
+        self.assertEqual(len({event["event_id"] for event in ranked}), 26)
+        self.assertEqual(metadata["strategy"], "batched-finalists")
+        self.assertEqual(metadata["openai_call_count"], 3)
+        self.assertEqual(metadata["token_usage"]["total_tokens"], 36)
 
     def test_legacy_model_keeps_temperature(self):
         original_model = MODULE.OPENAI_MODEL
