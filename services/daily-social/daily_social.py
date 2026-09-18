@@ -43,7 +43,7 @@ THREADS_TOKEN_REFRESH_DAYS = int(
     os.environ.get("THREADS_TOKEN_REFRESH_DAYS", "7")
 )
 BOBO_MEMORY_KEY = os.environ.get("BOBO_MEMORY_KEY", "agent/bobo-memory.json")
-THREADS_INTRODUCTION_KEY = "social/publications/threads/introduction.json"
+THREADS_INTRODUCTION_KEY = "social/publications/threads/introduction-v2.json"
 UNAVAILABLE_EVENT_STATUSES = {
     "canceled",
     "cancelled",
@@ -728,6 +728,24 @@ def publish_threads_text(text: str, credentials: dict[str, str]) -> list[str]:
     return post_ids
 
 
+def auto_publish_threads_text(text: str, credentials: dict[str, str]) -> str:
+    """Publish one text post atomically using Meta's text-only API option."""
+    response = threads_request_json(
+        f"{THREADS_API_BASE}/me/threads",
+        method="POST",
+        data={
+            "media_type": "TEXT",
+            "text": text,
+            "auto_publish_text": "true",
+            "access_token": credentials["THREADS_ACCESS_TOKEN"],
+        },
+    )
+    post_id = str(response.get("id", ""))
+    if not post_id:
+        raise RuntimeError("Threads did not return an auto-published post ID")
+    return post_id
+
+
 def publication_key(now: datetime) -> str:
     return f"social/publications/threads/{now:%Y-%m-%d}.json"
 
@@ -761,7 +779,7 @@ def handle_introduction(event: dict[str, Any], now: datetime) -> dict[str, Any]:
     write_publication_state(THREADS_INTRODUCTION_KEY, claim, claim=True)
     try:
         credentials = refresh_threads_token_if_needed(get_threads_credentials(), now)
-        post_ids = publish_threads_text(text, credentials)
+        post_ids = [auto_publish_threads_text(text, credentials)]
     except Exception as error:
         write_publication_state(
             THREADS_INTRODUCTION_KEY,

@@ -384,7 +384,7 @@ class DailySocialTests(unittest.TestCase):
             ), patch.object(
                 MODULE, "refresh_threads_token_if_needed", return_value=credentials
             ), patch.object(
-                MODULE, "publish_threads_text", return_value=["post-1"]
+                MODULE, "auto_publish_threads_text", return_value="post-1"
             ):
                 result = MODULE.handle_introduction(
                     {"mode": "introduction", "publish": True},
@@ -396,6 +396,18 @@ class DailySocialTests(unittest.TestCase):
         load_json.assert_not_called()
         self.assertTrue(write_state.call_args_list[0].kwargs["claim"])
         self.assertEqual(result["threads"]["status"], "published")
+
+    def test_introduction_uses_meta_text_auto_publish(self):
+        credentials = {"THREADS_ACCESS_TOKEN": "secret-token"}
+        with patch.object(
+            MODULE, "threads_request_json", return_value={"id": "post-1"}
+        ) as request:
+            post_id = MODULE.auto_publish_threads_text("Hello", credentials)
+
+        self.assertEqual(post_id, "post-1")
+        self.assertEqual(request.call_args.args[0], f"{MODULE.THREADS_API_BASE}/me/threads")
+        self.assertEqual(request.call_args.kwargs["data"]["auto_publish_text"], "true")
+        self.assertEqual(request.call_args.kwargs["data"]["media_type"], "TEXT")
 
     def test_campaign_archive_key_is_immutable_for_retries(self):
         original_s3 = MODULE.S3
