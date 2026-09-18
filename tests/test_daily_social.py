@@ -69,34 +69,62 @@ class DailySocialTests(unittest.TestCase):
             [event["event_id"] for event in ranked[: MODULE.MAX_SOCIAL_EVENTS]],
         )
 
-    def test_destination_worthy_event_gets_boost_without_local_quota(self):
-        now = datetime(2026, 9, 17, 7, tzinfo=ZoneInfo("America/New_York"))
-        events = [
+    def test_ai_can_rank_destination_event_above_nearby_routine_event(self):
+        candidates = [
             {
-                "event_id": f"local-{index}",
-                "name": f"Local {index}",
-                "date": "2026-09-17",
-                "recommendation_score": 90 - index,
-                "recommendation": {"destination_worthy": False},
-            }
-            for index in range(6)
-        ]
-        events.append(
+                "event_id": "local",
+                "name": "Routine nearby activity",
+                "recommendation_score": 90,
+            },
             {
                 "event_id": "revere-sand-festival",
                 "name": "Revere Sand Sculpting Festival",
-                "date": "2026-09-17",
                 "recommendation_score": 80,
-                "recommendation": {"destination_worthy": True},
+            },
+        ]
+        response = json.dumps(
+            {
+                "rankings": [
+                    {
+                        "event_id": "revere-sand-festival",
+                        "score": 90,
+                        "dimensions": {
+                            "leisure_appeal": 24,
+                            "local_significance": 24,
+                            "rarity": 19,
+                            "value": 8,
+                            "proximity_fit": 6,
+                            "information_confidence": 9,
+                        },
+                        "destination_worthy": True,
+                        "significance_signals": ["annual", "community landmark"],
+                        "reason_zh": "年度代表性活动，值得专程前往。",
+                        "reason_en": "A distinctive annual destination event.",
+                    },
+                    {
+                        "event_id": "local",
+                        "score": 66,
+                        "dimensions": {
+                            "leisure_appeal": 20,
+                            "local_significance": 10,
+                            "rarity": 8,
+                            "value": 8,
+                            "proximity_fit": 10,
+                            "information_confidence": 10,
+                        },
+                        "destination_worthy": False,
+                        "significance_signals": [],
+                        "reason_zh": "方便但较日常。",
+                        "reason_en": "Convenient but routine.",
+                    },
+                ]
             }
         )
-        ranked = MODULE.rank_social_events({"events": events}, {}, now)
+        ranked = MODULE.parse_ai_rankings(response, candidates)
         selected = MODULE.choose_social_events(ranked)
-        destination = next(
-            event for event in selected if event["event_id"] == "revere-sand-festival"
-        )
-        self.assertEqual(destination["social_adjustments"]["destination_worthy_bonus"], 12)
-        self.assertEqual(destination["selection_lane"], "destination_boost")
+        self.assertEqual(selected[0]["event_id"], "revere-sand-festival")
+        self.assertEqual(selected[0]["selection_lane"], "ai_destination_worthy")
+        self.assertEqual(selected[0]["ai_ranking"]["dimensions"]["rarity"], 19)
 
     def test_campaign_stores_auditable_free_ranking(self):
         original_s3 = MODULE.S3
@@ -106,24 +134,16 @@ class DailySocialTests(unittest.TestCase):
             {
                 "event_id": "revere-festival",
                 "recommendation_score": 80,
-                "social_score": 96,
-                "social_adjustments": {
-                    "timing_bonus": 4,
-                    "free_bonus": 0,
-                    "destination_worthy_bonus": 12,
-                },
-                "selection_lane": "destination_boost",
+                "social_score": 90,
+                "ai_ranking": {"score": 90, "destination_worthy": True},
+                "selection_lane": "ai_destination_worthy",
             },
             {
                 "event_id": "bu-concert",
                 "recommendation_score": 90,
-                "social_score": 94,
-                "social_adjustments": {
-                    "timing_bonus": 4,
-                    "free_bonus": 0,
-                    "destination_worthy_bonus": 0,
-                },
-                "selection_lane": "score_rank",
+                "social_score": 66,
+                "ai_ranking": {"score": 66, "destination_worthy": False},
+                "selection_lane": "ai_semantic_rank",
             },
         ]
         try:
@@ -150,12 +170,11 @@ class DailySocialTests(unittest.TestCase):
         self.assertEqual(decisions["revere-festival"]["base_score_rank"], 2)
         self.assertEqual(decisions["revere-festival"]["final_score_rank"], 1)
         self.assertEqual(decisions["revere-festival"]["final_selection_rank"], 1)
+        self.assertEqual(decisions["revere-festival"]["ai_ranking"]["score"], 90)
         self.assertEqual(
-            decisions["revere-festival"]["social_adjustments"][
-                "destination_worthy_bonus"
-            ],
-            12,
+            campaign["ranking_policy"]["method"], "bobo_ai_semantic_ranking"
         )
+        self.assertEqual(campaign["openai_call_count"], 2)
 
     def test_enforces_48_hour_cooldown(self):
         eastern = ZoneInfo("America/New_York")
@@ -239,6 +258,18 @@ class DailySocialTests(unittest.TestCase):
         self.assertIn("350-500 Traditional Chinese characters", prompt_text)
         self.assertIn("220-300 English words", prompt_text)
         self.assertIn("Do not place emoji", prompt_text)
+
+    def test_ranking_prompt_uses_identity_memory_and_no_distance_quota(self):
+        prompt = MODULE.build_ranking_prompt()
+        prompt_text = str(prompt)
+        self.assertIn("Runtime identity", prompt_text)
+        self.assertIn("long-term preference memory", prompt_text)
+        self.assertIn("never a quota or veto", prompt_text)
+        self.assertIn("local_significance", prompt_text)
+        rendered = prompt.format(
+            persona_json="{}", memory_json="{}", events_json="[]"
+        )
+        self.assertIn('{"rankings"', rendered)
 
     def test_rejects_model_generated_emoji(self):
         with self.assertRaisesRegex(ValueError, "contained emoji"):

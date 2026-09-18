@@ -24,6 +24,8 @@ BUCKET_NAME = os.environ.get("REPORT_BUCKET", "boston-weekend-agent-reports")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6-luna")
 OPENAI_REASONING_EFFORT = os.environ.get("OPENAI_REASONING_EFFORT", "none")
 PROMPT_VERSION = os.environ.get("REPORT_PROMPT_VERSION", "v3.1-bobo-bilingual")
+RANKING_PROMPT_VERSION = "ai-semantic-ranking-v1"
+BOBO_MEMORY_KEY = os.environ.get("BOBO_MEMORY_KEY", "agent/bobo-memory.json")
 EASTERN = ZoneInfo("America/New_York")
 
 S3 = boto3.client("s3", region_name=AWS_REGION)
@@ -37,6 +39,11 @@ EMOJI_PATTERN = re.compile(
 @lru_cache(maxsize=1)
 def load_persona() -> dict[str, Any]:
     path = Path(__file__).with_name("persona.json")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def load_default_memory() -> dict[str, Any]:
+    path = Path(__file__).with_name("memory.default.json")
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -88,6 +95,20 @@ def load_optional_json(key: str) -> dict[str, Any]:
     except Exception as error:
         if is_missing_s3_error(error):
             return {}
+        raise
+
+
+def load_bobo_memory() -> dict[str, Any]:
+    try:
+        memory = load_optional_json(BOBO_MEMORY_KEY)
+        return memory or load_default_memory()
+    except Exception as error:
+        if getattr(error, "response", {}).get("Error", {}).get("Code") in {
+            "AccessDenied",
+            "AccessDeniedException",
+        }:
+            LOGGER.warning("Using bundled Bo memory until IAM read access is granted")
+            return load_default_memory()
         raise
 
 
@@ -372,13 +393,173 @@ def filter_and_prioritize_events(
         ).lower()
         if any(term in event_text for term in ("festival", "fitness", "tour", "music", "dance")):
             score += 2
-        if (event.get("recommendation") or {}).get("destination_worthy"):
-            score += 12
         if any(term in event_text for term in ("abutters meeting", "office hours", "public meeting")):
             score -= 3
         event["priority_score"] = score
         selected.append(event)
     return sorted(selected, key=lambda item: item["priority_score"], reverse=True)
+
+
+def build_ranking_prompt():
+    from langchain_core.prompts import ChatPromptTemplate
+
+    return ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                """You are Bo, the semantic ranking judge for a Greater Boston
+weekend letter. Rank every supplied, eligible event together. Python has already
+enforced availability and date rules; your role is to understand cultural and
+leisure meaning that simple code cannot.
+
+Use only supplied evidence. Recognize when an annual, culturally significant,
+visually distinctive, or community-defining event merits a trip. A landmark
+event such as Revere's sand sculpting festival may outrank routine nearby plans.
+Proximity is useful but is never a quota or veto. Do not invent significance.
+
+Score each event from 0 to 100. These dimensions must sum to the final score:
+leisure_appeal 0-25, local_significance 0-25, rarity 0-20, value 0-10,
+proximity_fit 0-10, information_confidence 0-10. Return each event_id exactly
+once, best to worst, with Traditional Chinese and English reasons.
+
+Return strict JSON only:
+{{"rankings":[{{"event_id":"...","score":0,"dimensions":{{"leisure_appeal":0,
+"local_significance":0,"rarity":0,"value":0,"proximity_fit":0,
+"information_confidence":0}},"destination_worthy":false,
+"significance_signals":[],"reason_zh":"...","reason_en":"..."}}]}}""",
+            ),
+            (
+                "human",
+                """Bo's versioned identity:
+{persona_json}
+
+Bo's reviewed long-term memory:
+{memory_json}
+
+Weekend candidates:
+{events_json}""",
+            ),
+        ]
+    )
+
+
+def compact_ranking_events(events: list[dict[str, Any]]) -> str:
+    fields = (
+        "event_id",
+        "name",
+        "description",
+        "category",
+        "source",
+        "date",
+        "time",
+        "city",
+        "location",
+        "price",
+        "time_label",
+    )
+    compact = []
+    for index, event in enumerate(events):
+        item = {field: event.get(field) for field in fields if event.get(field) is not None}
+        item["event_id"] = str(event.get("event_id") or f"weekend-{index}")
+        item["distance_miles"] = (event.get("recommendation") or {}).get(
+            "distance_miles"
+        )
+        if "description" in item:
+            item["description"] = str(item["description"])[:700]
+        compact.append(item)
+    return json.dumps(compact, ensure_ascii=False)
+
+
+def parse_ai_rankings(content: Any, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", str(content).strip(), flags=re.I)
+    payload = json.loads(text)
+    rankings = payload.get("rankings")
+    if not isinstance(rankings, list):
+        raise ValueError("AI ranking response did not contain a rankings array")
+
+    by_id = {}
+    for index, event in enumerate(candidates):
+        event_id = str(event.get("event_id") or f"weekend-{index}")
+        normalized_event = dict(event)
+        normalized_event["event_id"] = event_id
+        by_id[event_id] = normalized_event
+    returned_ids = [str(item.get("event_id")) for item in rankings]
+    if len(returned_ids) != len(set(returned_ids)) or set(returned_ids) != set(by_id):
+        raise ValueError("AI ranking response must contain every candidate exactly once")
+
+    limits = {
+        "leisure_appeal": 25,
+        "local_significance": 25,
+        "rarity": 20,
+        "value": 10,
+        "proximity_fit": 10,
+        "information_confidence": 10,
+    }
+    ranked = []
+    for item in rankings:
+        event_id = str(item["event_id"])
+        dimensions = item.get("dimensions")
+        if not isinstance(dimensions, dict):
+            raise ValueError(f"AI ranking dimensions missing for {event_id}")
+        normalized = {}
+        for name, maximum in limits.items():
+            value = float(dimensions.get(name, -1))
+            if not 0 <= value <= maximum:
+                raise ValueError(f"AI ranking dimension {name} is invalid for {event_id}")
+            normalized[name] = value
+        calculated_score = round(sum(normalized.values()), 2)
+        if abs(calculated_score - float(item.get("score", calculated_score))) > 0.01:
+            raise ValueError(f"AI ranking score does not match dimensions for {event_id}")
+
+        event = dict(by_id[event_id])
+        event["ai_ranking"] = {
+            "score": calculated_score,
+            "dimensions": normalized,
+            "destination_worthy": bool(item.get("destination_worthy")),
+            "significance_signals": [
+                str(signal) for signal in item.get("significance_signals", [])
+            ],
+            "reason_zh": str(item.get("reason_zh") or ""),
+            "reason_en": str(item.get("reason_en") or ""),
+        }
+        event["priority_score"] = calculated_score
+        ranked.append(event)
+    return sorted(ranked, key=lambda item: item["priority_score"], reverse=True)
+
+
+def ai_rank_weekend_events(
+    candidates: list[dict[str, Any]], memory: dict[str, Any]
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    from langchain_openai import ChatOpenAI
+
+    if not candidates:
+        return [], {
+            "model": OPENAI_MODEL,
+            "prompt_version": RANKING_PROMPT_VERSION,
+            "memory_version": memory.get("memory_version"),
+            "candidate_count": 0,
+            "token_usage": {},
+            "status": "skipped_no_candidates",
+        }
+
+    model = ChatOpenAI(**chat_model_options(get_openai_api_key(), 0.2))
+    result = (build_ranking_prompt() | model).invoke(
+        {
+            "persona_json": json.dumps(load_persona(), ensure_ascii=False),
+            "memory_json": json.dumps(memory, ensure_ascii=False),
+            "events_json": compact_ranking_events(candidates),
+        }
+    )
+    usage = getattr(result, "usage_metadata", None) or getattr(
+        result, "response_metadata", {}
+    ).get("token_usage", {})
+    return parse_ai_rankings(result.content, candidates), {
+        "model": OPENAI_MODEL,
+        "prompt_version": RANKING_PROMPT_VERSION,
+        "memory_version": memory.get("memory_version"),
+        "candidate_count": len(candidates),
+        "token_usage": usage or {},
+    }
 
 
 def format_events(events: list[dict[str, Any]], limit: int = 8) -> str:
@@ -394,6 +575,8 @@ def format_events(events: list[dict[str, Any]], limit: int = 8) -> str:
                 f"   Time: {event.get('time') or 'See event page'}",
                 f"   Source: {event.get('source') or 'Unknown'}",
                 f"   Link: {event.get('link') or 'Not provided'}",
+                f"   Bo ranking score: {(event.get('ai_ranking') or {}).get('score', 'Unknown')}",
+                f"   Bo ranking reason: {(event.get('ai_ranking') or {}).get('reason_zh', 'Not provided')}",
             ]
         )
     return "\n".join(lines)
@@ -553,7 +736,9 @@ def generate_report(
     now = now or datetime.now(EASTERN)
     context = build_time_context(now)
     edition = determine_edition(now, edition_override)
-    events = filter_and_prioritize_events(events_data, now)
+    candidates = filter_and_prioritize_events(events_data, now)
+    memory = load_bobo_memory()
+    events, ranking_metadata = ai_rank_weekend_events(candidates, memory)
     recommendations = (weather_data.get("summary") or {}).get("recommendations") or {}
     top_pick = recommendations.get("top_pick") or {}
 
@@ -590,6 +775,17 @@ def generate_report(
             "version": load_persona()["version"],
             "mood_kaomoji": mood_kaomoji,
         },
+        "ranking": ranking_metadata,
+        "openai_call_count": 2 if candidates else 1,
+        "ranked_events": [
+            {
+                "event_id": event.get("event_id"),
+                "name": event.get("name"),
+                "final_rank": rank,
+                "ai_ranking": event.get("ai_ranking"),
+            }
+            for rank, event in enumerate(events, start=1)
+        ],
         "token_usage": usage_metadata or {},
         "context": context,
     }
@@ -654,6 +850,9 @@ def store_analytics_manifest(
         "model": result["model"],
         "prompt_version": result["prompt_version"],
         "persona": result.get("persona"),
+        "ranking": result.get("ranking"),
+        "ranked_events": result.get("ranked_events"),
+        "openai_call_count": result.get("openai_call_count"),
         "token_usage": result["token_usage"],
         "events_count": result["events_count"],
         "lambda_request_id": lambda_request_id,

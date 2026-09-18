@@ -36,7 +36,9 @@ On Friday this is recalculated against the archived Thursday baseline.
 - schema version and run ID;
 - generation time and edition;
 - OpenAI model and prompt version;
-- token usage when returned by the model;
+- separate ranking and writing model metadata and token usage;
+- the Bo persona and memory versions used for the decision;
+- every candidate's AI component scores, reasons, and final rank;
 - Lambda request ID;
 - source keys, source VersionIds, ETags, and archived keys;
 - derived change and baseline objects;

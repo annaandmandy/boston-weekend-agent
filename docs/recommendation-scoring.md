@@ -24,19 +24,33 @@ proximity preference. Boston remains preferred, followed by inner Greater
 Boston; Natick and other outer locations need stronger interest value to rank
 above a nearby event.
 
-## Destination-worthy boost without quotas
+## Semantic ranking by Bo
+
+Version 1.0 remains a deterministic baseline and safety layer. It filters
+unavailable or invalid events and supplies factual distance and data-quality
+evidence, but it no longer decides the final editorial ranking.
+
+One batched LLM call ranks all eligible candidates together using Bo's versioned
+persona and reviewed long-term memory. It scores six dimensions totaling 100:
+
+| AI component | Points | Purpose |
+| --- | ---: | --- |
+| Leisure appeal | 25 | How compelling the experience is for a leisure outing |
+| Local significance | 25 | Cultural or community importance around Greater Boston |
+| Rarity | 20 | Annual, unusual, seasonal, or hard-to-repeat value |
+| Value | 10 | Price relative to the experience |
+| Proximity fit | 10 | Convenience from the BU/Boston home context |
+| Information confidence | 10 | How well the source supports a recommendation |
 
 Distance is a preference, not a veto, and there is no fixed local-versus-distant
-quota. Festivals, sand-sculpture events, parades, fireworks, carnivals,
-regattas, cultural festivals, and open-studios events receive a transparent
-destination-worthy adjustment before all candidates are freely ranked together.
-The final five may therefore contain any mix of local and outer Greater Boston
-events. This keeps routine recommendations close to BU without hiding events
-such as the Revere International Sand Sculpting Festival.
+quota. Semantic ranking lets an event such as the Revere International Sand
+Sculpting Festival outrank routine nearby options because it is rare and locally
+significant, without relying on a brittle keyword bonus.
 
-The campaign decision trail stores the base recommendation, each social
-adjustment, `base_score_rank`, adjusted `final_score_rank`, the published
-`final_selection_rank`, and `selection_lane=destination_boost` where applicable.
+The campaign decision trail stores the deterministic baseline, the six AI
+components, bilingual reasons, significance signals, destination judgment,
+`base_score_rank`, `final_score_rank`, published `final_selection_rank`, model,
+prompt version, token usage, and memory version.
 
 Canceled, postponed, rescheduled, off-sale, and sold-out events receive an
 ineligible status and a zero recommendation score. They remain in immutable

@@ -6,5 +6,6 @@ RUN pip install --no-cache-dir -r ${LAMBDA_TASK_ROOT}/requirements.txt
 
 COPY langchain_report.py ${LAMBDA_TASK_ROOT}/langchain_report.py
 COPY persona.json ${LAMBDA_TASK_ROOT}/persona.json
+COPY memory.default.json ${LAMBDA_TASK_ROOT}/memory.default.json
 
 CMD ["langchain_report.lambda_handler"]

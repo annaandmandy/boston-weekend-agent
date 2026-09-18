@@ -27,6 +27,7 @@ AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 BUCKET_NAME = os.environ.get("REPORT_BUCKET", "boston-weekend-agent-reports")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6-luna")
 OPENAI_REASONING_EFFORT = os.environ.get("OPENAI_REASONING_EFFORT", "none")
+RANKING_PROMPT_VERSION = "ai-semantic-ranking-v1"
 WEBSITE_URL = os.environ.get(
     "WEBSITE_URL", "https://www.hsiangyuhuang.com/weekend_report"
 )
@@ -41,6 +42,7 @@ THREADS_MAX_POST_LENGTH = 500
 THREADS_TOKEN_REFRESH_DAYS = int(
     os.environ.get("THREADS_TOKEN_REFRESH_DAYS", "7")
 )
+BOBO_MEMORY_KEY = os.environ.get("BOBO_MEMORY_KEY", "agent/bobo-memory.json")
 UNAVAILABLE_EVENT_STATUSES = {
     "canceled",
     "cancelled",
@@ -63,6 +65,24 @@ EMOJI_PATTERN = re.compile(
 def load_persona() -> dict[str, Any]:
     path = Path(__file__).with_name("persona.json")
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def load_default_memory() -> dict[str, Any]:
+    path = Path(__file__).with_name("memory.default.json")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def load_bobo_memory() -> dict[str, Any]:
+    try:
+        return load_json(BOBO_MEMORY_KEY, default=load_default_memory())
+    except Exception as error:
+        if getattr(error, "response", {}).get("Error", {}).get("Code") in {
+            "AccessDenied",
+            "AccessDeniedException",
+        }:
+            LOGGER.warning("Using bundled Bo memory until IAM read access is granted")
+            return load_default_memory()
+        raise
 
 
 @lru_cache(maxsize=1)
@@ -242,11 +262,6 @@ def rank_social_events(
             "free_bonus": (
                 1 if "free" in str(event.get("price") or "").lower() else 0
             ),
-            "destination_worthy_bonus": (
-                12
-                if (event.get("recommendation") or {}).get("destination_worthy")
-                else 0
-            ),
         }
         score = base_score + sum(adjustments.values())
         event["event_id"] = event_id
@@ -257,6 +272,158 @@ def rank_social_events(
 
     candidates.sort(key=lambda item: item["social_score"], reverse=True)
     return candidates
+
+
+def build_ranking_prompt():
+    from langchain_core.prompts import ChatPromptTemplate
+
+    return ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                """You are the semantic ranking editor for Boston Weekend Agent.
+Rank all supplied events together for a person based near Boston University who
+wants worthwhile leisure plans around Greater Boston. Python has already removed
+unavailable, out-of-window, and cooldown events; do not reverse those hard rules.
+
+Use the event's supplied name, description, category, source, price, date,
+location, and distance evidence. Understand meaning rather than keyword counts.
+A rare annual or culturally significant destination event—such as Revere's sand
+sculpting festival—may outrank an ordinary nearby event when the trip is worth it.
+Proximity is useful but never a quota or veto. Do not invent facts or claim an
+event is annual unless the supplied data supports that inference.
+
+Score every event from 0 to 100 using these dimensions, whose values must sum to
+the final score: leisure_appeal 0-25, local_significance 0-25, rarity 0-20,
+value 0-10, proximity_fit 0-10, information_confidence 0-10. Return each supplied
+event_id exactly once, ordered best to worst. Give concise Traditional Chinese
+and English reasons, plus destination_worthy and significance_signals.
+
+Return strict JSON only:
+{{"rankings":[{{"event_id":"...","score":0,"dimensions":{{"leisure_appeal":0,
+"local_significance":0,"rarity":0,"value":0,"proximity_fit":0,
+"information_confidence":0}},"destination_worthy":false,
+"significance_signals":[],"reason_zh":"...","reason_en":"..."}}]}}""",
+            ),
+            (
+                "human",
+                """Runtime identity for the ranking judge:
+{persona_json}
+
+Versioned long-term preference memory:
+{memory_json}
+
+Rank these verified candidate events:
+{events_json}""",
+            ),
+        ]
+    )
+
+
+def compact_ranking_events(events: list[dict[str, Any]]) -> str:
+    fields = (
+        "event_id",
+        "name",
+        "description",
+        "category",
+        "source",
+        "date",
+        "time",
+        "city",
+        "location",
+        "price",
+        "day_offset",
+    )
+    compact = []
+    for event in events:
+        item = {field: event.get(field) for field in fields if event.get(field) is not None}
+        item["distance_miles"] = (event.get("recommendation") or {}).get(
+            "distance_miles"
+        )
+        if "description" in item:
+            item["description"] = str(item["description"])[:700]
+        compact.append(item)
+    return json.dumps(compact, ensure_ascii=False)
+
+
+def parse_ai_rankings(content: Any, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", str(content).strip(), flags=re.I)
+    payload = json.loads(text)
+    rankings = payload.get("rankings")
+    if not isinstance(rankings, list):
+        raise ValueError("AI ranking response did not contain a rankings array")
+
+    by_id = {str(event["event_id"]): event for event in candidates}
+    expected_ids = set(by_id)
+    returned_ids = [str(item.get("event_id")) for item in rankings]
+    if len(returned_ids) != len(set(returned_ids)) or set(returned_ids) != expected_ids:
+        raise ValueError("AI ranking response must contain every candidate exactly once")
+
+    dimensions = {
+        "leisure_appeal": 25,
+        "local_significance": 25,
+        "rarity": 20,
+        "value": 10,
+        "proximity_fit": 10,
+        "information_confidence": 10,
+    }
+    ranked = []
+    for item in rankings:
+        event_id = str(item["event_id"])
+        scores = item.get("dimensions")
+        if not isinstance(scores, dict):
+            raise ValueError(f"AI ranking dimensions missing for {event_id}")
+        normalized = {}
+        for name, maximum in dimensions.items():
+            value = float(scores.get(name, -1))
+            if not 0 <= value <= maximum:
+                raise ValueError(f"AI ranking dimension {name} is invalid for {event_id}")
+            normalized[name] = value
+        calculated_score = round(sum(normalized.values()), 2)
+        supplied_score = float(item.get("score", calculated_score))
+        if abs(calculated_score - supplied_score) > 0.01:
+            raise ValueError(f"AI ranking score does not match dimensions for {event_id}")
+
+        event = dict(by_id[event_id])
+        event["ai_ranking"] = {
+            "score": calculated_score,
+            "dimensions": normalized,
+            "destination_worthy": bool(item.get("destination_worthy")),
+            "significance_signals": [
+                str(signal) for signal in item.get("significance_signals", [])
+            ],
+            "reason_zh": str(item.get("reason_zh") or ""),
+            "reason_en": str(item.get("reason_en") or ""),
+        }
+        event["social_score"] = calculated_score
+        ranked.append(event)
+    return sorted(ranked, key=lambda item: item["social_score"], reverse=True)
+
+
+def ai_rank_social_events(
+    candidates: list[dict[str, Any]],
+    memory: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    from langchain_openai import ChatOpenAI
+
+    model = ChatOpenAI(**chat_model_options(get_openai_api_key(), 0.2))
+    result = (build_ranking_prompt() | model).invoke(
+        {
+            "persona_json": json.dumps(load_persona(), ensure_ascii=False),
+            "memory_json": json.dumps(memory, ensure_ascii=False),
+            "events_json": compact_ranking_events(candidates),
+        }
+    )
+    usage = getattr(result, "usage_metadata", None) or getattr(
+        result, "response_metadata", {}
+    ).get("token_usage", {})
+    return parse_ai_rankings(result.content, candidates), {
+        "model": OPENAI_MODEL,
+        "prompt_version": RANKING_PROMPT_VERSION,
+        "token_usage": usage or {},
+        "candidate_count": len(candidates),
+        "memory_version": memory.get("memory_version"),
+    }
 
 
 def select_social_events(
@@ -271,11 +438,11 @@ def choose_social_events(ranked: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Select freely by final score; distance and uniqueness are soft signals."""
     selected = ranked[:MAX_SOCIAL_EVENTS]
     for event in selected:
-        destination_bonus = event.get("social_adjustments", {}).get(
-            "destination_worthy_bonus", 0
+        destination_worthy = (event.get("ai_ranking") or {}).get(
+            "destination_worthy", False
         )
         event["selection_lane"] = (
-            "destination_boost" if destination_bonus else "score_rank"
+            "ai_destination_worthy" if destination_worthy else "ai_semantic_rank"
         )
     return selected
 
@@ -293,6 +460,8 @@ def format_events(events: list[dict[str, Any]]) -> str:
                     str(event.get("location") or event.get("city") or "Greater Boston"),
                     str(event.get("price") or "價格見活動頁面"),
                     str(event.get("link") or ""),
+                    f"波波評分 {(event.get('ai_ranking') or {}).get('score', 'N/A')}",
+                    str((event.get("ai_ranking") or {}).get("reason_zh") or ""),
                 )
             )
         )
@@ -379,7 +548,9 @@ def parse_model_json(content: Any) -> dict[str, Any]:
     return result
 
 
-def generate_content(events: list[dict[str, Any]], now: datetime) -> dict[str, Any]:
+def generate_content(
+    events: list[dict[str, Any]], now: datetime
+) -> tuple[dict[str, Any], dict[str, Any]]:
     from langchain_openai import ChatOpenAI
 
     model = ChatOpenAI(**chat_model_options(get_openai_api_key(), 0.3))
@@ -391,7 +562,14 @@ def generate_content(events: list[dict[str, Any]], now: datetime) -> dict[str, A
             "website_url": WEBSITE_URL,
         }
     )
-    return parse_model_json(response.content)
+    usage = getattr(response, "usage_metadata", None) or getattr(
+        response, "response_metadata", {}
+    ).get("token_usage", {})
+    return parse_model_json(response.content), {
+        "model": OPENAI_MODEL,
+        "prompt_version": "bobo-social-story-v2",
+        "token_usage": usage or {},
+    }
 
 
 def select_kaomoji(events: list[dict[str, Any]], now: datetime) -> str:
@@ -553,6 +731,8 @@ def store_campaign(
     threads_state: dict[str, Any] | None = None,
     mood_kaomoji: str | None = None,
     ranked_events: list[dict[str, Any]] | None = None,
+    ranking_metadata: dict[str, Any] | None = None,
+    writing_metadata: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     campaign_id = now.strftime("%Y-%m-%d")
     event_ids = [event["event_id"] for event in events]
@@ -580,13 +760,15 @@ def store_campaign(
         "shared_text": render_shared_text(content, mood_kaomoji),
         "selected_event_ids": event_ids,
         "ranking_policy": {
-            "version": "1.1",
-            "method": "free_final_score_ranking",
+            "version": RANKING_PROMPT_VERSION,
+            "method": "bobo_ai_semantic_ranking",
             "max_events": MAX_SOCIAL_EVENTS,
             "home_base": "Boston University Charles River Campus",
-            "destination_worthy_bonus": 12,
             "fixed_local_quota": False,
         },
+        "ranking_run": ranking_metadata or {},
+        "writing_run": writing_metadata or {},
+        "openai_call_count": 2,
         "selection_decisions": [
             {
                 "event_id": event["event_id"],
@@ -599,6 +781,7 @@ def store_campaign(
                 "recommendation": event.get("recommendation"),
                 "social_adjustments": event.get("social_adjustments"),
                 "social_score": event.get("social_score"),
+                "ai_ranking": event.get("ai_ranking"),
             }
             for rank, event in enumerate(candidate_events, start=1)
         ],
@@ -670,12 +853,37 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     events_data = load_json("events/latest.json")
     history = load_json("social/history.json", default={})
-    ranked = rank_social_events(events_data, history, now)
+    memory = load_bobo_memory()
+    candidates = rank_social_events(events_data, history, now)
+    if not candidates:
+        raise RuntimeError("No eligible events remain after the 48-hour cooldown")
+    ranked, ranking_metadata = ai_rank_social_events(candidates, memory)
     selected = choose_social_events(ranked)
     if not selected:
-        raise RuntimeError("No eligible events remain after the 48-hour cooldown")
+        raise RuntimeError("AI ranking returned no selectable events")
     mood_kaomoji = select_kaomoji(selected, now)
-    content = generate_content(selected, now)
+    content, writing_metadata = generate_content(selected, now)
+    if isinstance(event, dict) and event.get("dry_run"):
+        return {
+            "success": True,
+            "dry_run": True,
+            "generated_at": now.isoformat(),
+            "openai_call_count": 2,
+            "ranking_run": ranking_metadata,
+            "writing_run": writing_metadata,
+            "selected_event_ids": [item["event_id"] for item in selected],
+            "ranked_events": [
+                {
+                    "event_id": item["event_id"],
+                    "name": item.get("name"),
+                    "final_rank": rank,
+                    "ai_ranking": item.get("ai_ranking"),
+                }
+                for rank, item in enumerate(ranked, start=1)
+            ],
+            "shared_text": render_shared_text(content, mood_kaomoji),
+            "threads": {"status": "disabled_dry_run"},
+        }
     keys = store_campaign(
         content,
         selected,
@@ -683,6 +891,8 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         now,
         mood_kaomoji=mood_kaomoji,
         ranked_events=ranked,
+        ranking_metadata=ranking_metadata,
+        writing_metadata=writing_metadata,
     )
     threads_result: dict[str, Any] = {"status": "disabled"}
     if THREADS_PUBLISH_ENABLED:
@@ -715,6 +925,8 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 threads_state={"status": "failed"},
                 mood_kaomoji=mood_kaomoji,
                 ranked_events=ranked,
+                ranking_metadata=ranking_metadata,
+                writing_metadata=writing_metadata,
             )
             raise
         threads_result = {
