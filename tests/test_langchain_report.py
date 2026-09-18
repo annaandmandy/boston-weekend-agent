@@ -147,6 +147,10 @@ class LangChainReportTests(unittest.TestCase):
         self.assertEqual(options["reasoning_effort"], "none")
         self.assertNotIn("temperature", options)
 
+    def test_weekend_ranking_reserves_output_for_all_candidates(self):
+        source = MODULE_PATH.read_text(encoding="utf-8")
+        self.assertIn("max_tokens=7000", source)
+
     def test_legacy_model_keeps_temperature(self):
         original_model = MODULE.OPENAI_MODEL
         MODULE.OPENAI_MODEL = "gpt-4o"

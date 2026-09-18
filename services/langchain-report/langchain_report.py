@@ -555,7 +555,10 @@ def ai_rank_weekend_events(
             "status": "skipped_no_candidates",
         }
 
-    model = ChatOpenAI(**chat_model_options(get_openai_api_key(), 0.2))
+    model = ChatOpenAI(
+        **chat_model_options(get_openai_api_key(), 0.2),
+        max_tokens=7000,
+    )
     result = (build_ranking_prompt() | model).invoke(
         {
             "persona_json": json.dumps(load_persona(), ensure_ascii=False),
