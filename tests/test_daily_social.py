@@ -46,6 +46,25 @@ class DailySocialTests(unittest.TestCase):
         selected = MODULE.select_social_events(data, {}, now)
         self.assertEqual({event["event_id"] for event in selected}, {"today", "tomorrow"})
 
+    def test_keeps_full_candidate_ranking_for_analysis(self):
+        now = datetime(2026, 9, 17, 7, tzinfo=ZoneInfo("America/New_York"))
+        data = {
+            "events": [
+                {
+                    "event_id": f"event-{index}",
+                    "name": f"Event {index}",
+                    "date": "2026-09-17",
+                    "recommendation_score": 80 - index,
+                }
+                for index in range(7)
+            ]
+        }
+        ranked = MODULE.rank_social_events(data, {}, now)
+        selected = MODULE.select_social_events(data, {}, now)
+        self.assertEqual(len(ranked), 7)
+        self.assertEqual(len(selected), MODULE.MAX_SOCIAL_EVENTS)
+        self.assertEqual(selected, ranked[: MODULE.MAX_SOCIAL_EVENTS])
+
     def test_enforces_48_hour_cooldown(self):
         eastern = ZoneInfo("America/New_York")
         now = datetime(2026, 9, 17, 7, tzinfo=eastern)
@@ -63,6 +82,27 @@ class DailySocialTests(unittest.TestCase):
         }
         selected = MODULE.select_social_events(data, history, now)
         self.assertEqual([event["event_id"] for event in selected], ["old"])
+
+    def test_excludes_unavailable_events(self):
+        now = datetime(2026, 9, 17, 7, tzinfo=ZoneInfo("America/New_York"))
+        data = {
+            "events": [
+                {
+                    "event_id": "sold-out",
+                    "name": "Sold out show",
+                    "date": "2026-09-17",
+                    "availability_status": "sold_out",
+                },
+                {
+                    "event_id": "available",
+                    "name": "Available show",
+                    "date": "2026-09-17",
+                    "availability_status": "onsale",
+                },
+            ]
+        }
+        selected = MODULE.select_social_events(data, {}, now)
+        self.assertEqual([event["event_id"] for event in selected], ["available"])
 
     def test_renders_one_identical_shared_post(self):
         content = {

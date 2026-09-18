@@ -5,6 +5,13 @@ Ticketmaster searches within 25 miles of downtown Boston, while municipal and
 regional calendars fill gaps for festivals, markets, outdoor programs, library
 events, and neighborhood celebrations.
 
+Ticketmaster events retain the provider status and receive a lightweight check
+of their final Ticketmaster or TicketWeb page. A detected sold-out, canceled, or
+postponed status is stored in the normalized snapshot. Synthetic `$0-$0` API
+ranges are treated as unknown prices rather than free admission. Page-check
+failures are logged and fail open so a temporary provider block does not discard
+the entire event source.
+
 ## Active sources
 
 | Source | Coverage | Adapter |

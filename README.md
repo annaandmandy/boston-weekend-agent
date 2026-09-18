@@ -59,6 +59,7 @@ infrastructure/
 docs/
   deployment.md         Manual deployment and verification procedure
   persona.md            Voice, editorial style, and kaomoji identity for Bo
+  recommendation-scoring.md  Explainable BU-centered event ranking
   event-sources.md       Active and candidate Greater Boston sources
   analytics-history.md   Immutable report inputs and lineage manifest
   migration-checklist.md
@@ -120,6 +121,10 @@ tests each Lambda independently before changing the production state machine.
   usable events from other sources.
 - Community events come from official or city-affiliated calendars across
   Greater Boston. See [`docs/event-sources.md`](docs/event-sources.md).
+- Ticket listings retain availability state; sold-out, canceled, postponed,
+  rescheduled, and off-sale events remain in history but are not recommended.
+- Bo ranks events with an explainable BU-centered 100-point model and archives
+  the full candidate decision trail for later feedback analysis.
 - Event and report snapshots are timestamped while stable `latest` keys support
   the website.
 - Each report archives the exact versioned inputs it used and writes a structured

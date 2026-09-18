@@ -41,6 +41,14 @@ THREADS_MAX_POST_LENGTH = 500
 THREADS_TOKEN_REFRESH_DAYS = int(
     os.environ.get("THREADS_TOKEN_REFRESH_DAYS", "7")
 )
+UNAVAILABLE_EVENT_STATUSES = {
+    "canceled",
+    "cancelled",
+    "offsale",
+    "postponed",
+    "rescheduled",
+    "sold_out",
+}
 EASTERN = ZoneInfo("America/New_York")
 
 S3 = boto3.client("s3", region_name=AWS_REGION)
@@ -200,16 +208,18 @@ def _parse_datetime(value: str | None) -> datetime | None:
     return parsed.astimezone(EASTERN)
 
 
-def select_social_events(
+def rank_social_events(
     events_data: dict[str, Any],
     history: dict[str, Any],
     now: datetime,
 ) -> list[dict[str, Any]]:
-    """Pick today through two days ahead, enforcing a 48-hour cooldown."""
+    """Rank today through two days ahead after enforcing the cooldown."""
     cutoff = now - timedelta(hours=COOLDOWN_HOURS)
     last_selected = history.get("last_selected", {})
     candidates = []
     for original in events_data.get("events", []):
+        if str(original.get("availability_status") or "").lower() in UNAVAILABLE_EVENT_STATUSES:
+            continue
         try:
             event_date = datetime.strptime(original.get("date"), "%Y-%m-%d").date()
         except (TypeError, ValueError):
@@ -224,7 +234,9 @@ def select_social_events(
         if previous_time and previous_time > cutoff:
             continue
 
-        score = float(event.get("quality_score", 5))
+        score = float(
+            event.get("recommendation_score", event.get("quality_score", 5))
+        )
         score += {0: 4, 1: 2, 2: 1}.get(offset, 0)
         if "free" in str(event.get("price") or "").lower():
             score += 1
@@ -234,7 +246,15 @@ def select_social_events(
         candidates.append(event)
 
     candidates.sort(key=lambda item: item["social_score"], reverse=True)
-    return candidates[:MAX_SOCIAL_EVENTS]
+    return candidates
+
+
+def select_social_events(
+    events_data: dict[str, Any],
+    history: dict[str, Any],
+    now: datetime,
+) -> list[dict[str, Any]]:
+    return rank_social_events(events_data, history, now)[:MAX_SOCIAL_EVENTS]
 
 
 def format_events(events: list[dict[str, Any]]) -> str:
@@ -503,6 +523,7 @@ def store_campaign(
     now: datetime,
     threads_state: dict[str, Any] | None = None,
     mood_kaomoji: str | None = None,
+    ranked_events: list[dict[str, Any]] | None = None,
 ) -> dict[str, str]:
     campaign_id = now.strftime("%Y-%m-%d")
     event_ids = [event["event_id"] for event in events]
@@ -512,6 +533,17 @@ def store_campaign(
         "content": content,
         "shared_text": render_shared_text(content, mood_kaomoji),
         "selected_event_ids": event_ids,
+        "selection_decisions": [
+            {
+                "event_id": event["event_id"],
+                "rank": rank,
+                "selected": event["event_id"] in event_ids,
+                "recommendation_score": event.get("recommendation_score"),
+                "recommendation": event.get("recommendation"),
+                "social_score": event.get("social_score"),
+            }
+            for rank, event in enumerate(ranked_events or events, start=1)
+        ],
         "persona": {
             "id": load_persona()["id"],
             "version": load_persona()["version"],
@@ -580,13 +612,19 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
 
     events_data = load_json("events/latest.json")
     history = load_json("social/history.json", default={})
-    selected = select_social_events(events_data, history, now)
+    ranked = rank_social_events(events_data, history, now)
+    selected = ranked[:MAX_SOCIAL_EVENTS]
     if not selected:
         raise RuntimeError("No eligible events remain after the 48-hour cooldown")
     mood_kaomoji = select_kaomoji(selected, now)
     content = generate_content(selected, now)
     keys = store_campaign(
-        content, selected, history, now, mood_kaomoji=mood_kaomoji
+        content,
+        selected,
+        history,
+        now,
+        mood_kaomoji=mood_kaomoji,
+        ranked_events=ranked,
     )
     threads_result: dict[str, Any] = {"status": "disabled"}
     if THREADS_PUBLISH_ENABLED:
@@ -618,6 +656,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 now,
                 threads_state={"status": "failed"},
                 mood_kaomoji=mood_kaomoji,
+                ranked_events=ranked,
             )
             raise
         threads_result = {
@@ -638,6 +677,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             now,
             threads_state=threads_result,
             mood_kaomoji=mood_kaomoji,
+            ranked_events=ranked,
         )
     result = {
         "success": True,

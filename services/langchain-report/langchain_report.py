@@ -323,6 +323,15 @@ def filter_and_prioritize_events(
         end = start + timedelta(days=2)
     selected = []
     for original in events_data.get("events", []):
+        if str(original.get("availability_status") or "").lower() in {
+            "canceled",
+            "cancelled",
+            "offsale",
+            "postponed",
+            "rescheduled",
+            "sold_out",
+        }:
+            continue
         raw_date = original.get("date")
         try:
             event_date = datetime.strptime(raw_date, "%Y-%m-%d").date()
@@ -340,7 +349,9 @@ def filter_and_prioritize_events(
             if offset == 1
             else event_date.strftime("%A")
         )
-        score = float(event.get("quality_score", 5))
+        score = float(
+            event.get("recommendation_score", event.get("quality_score", 5))
+        )
         if "free" in str(event.get("price") or "").lower():
             score += 2
         event_text = " ".join(

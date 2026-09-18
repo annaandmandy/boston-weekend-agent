@@ -130,6 +130,25 @@ class LangChainReportTests(unittest.TestCase):
             {event["name"] for event in events}, {"Friday Music", "Sunday Tour"}
         )
 
+    def test_weekend_report_excludes_unavailable_event(self):
+        now = datetime(2026, 9, 17, 17, tzinfo=ZoneInfo("America/New_York"))
+        data = {
+            "events": [
+                {
+                    "name": "Sold out concert",
+                    "date": "2026-09-18",
+                    "availability_status": "sold_out",
+                },
+                {
+                    "name": "Open concert",
+                    "date": "2026-09-18",
+                    "availability_status": "onsale",
+                },
+            ]
+        }
+        events = MODULE.filter_and_prioritize_events(data, now)
+        self.assertEqual([event["name"] for event in events], ["Open concert"])
+
     def test_normalizes_accidental_json_suffix(self):
         self.assertEqual(
             MODULE.normalize_report_text("Enjoy your weekend!\"}"),

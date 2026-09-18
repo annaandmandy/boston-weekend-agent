@@ -60,6 +60,7 @@ Create `collect_events_v2` as an x86_64 image Lambda. Configure:
 - `MAX_EVENTS_PER_SOURCE`: `10`
 - `MAX_CITY_EVENTS`: `30`
 - `DAYS_AHEAD`: `10`
+- `VERIFY_TICKET_PAGE_STATUS`: `true`
 
 Attach the standard Lambda basic execution policy and the scoped statements in
 `infrastructure/iam/collect-events-policy.json` after replacing the placeholder.
