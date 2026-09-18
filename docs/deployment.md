@@ -152,8 +152,21 @@ objects exist and contain the same shared copy:
 ## Install the schedules
 
 Deploy `infrastructure/cloudformation/schedules.yaml` with the collector Lambda
-ARN, daily-social Lambda ARN, and existing weekend state-machine ARN. The stack
-requires `CAPABILITY_NAMED_IAM` because it creates one scheduler execution role.
+ARN, daily-social Lambda ARN, existing weekend state-machine ARN, and the email
+address that should receive failure alerts. The stack requires
+`CAPABILITY_NAMED_IAM` because it creates one scheduler execution role.
+
+The same stack also creates:
+
+- `boston-weekend-scheduler-dlq`, an SQS dead-letter queue with SQS-managed
+  encryption and 14-day retention;
+- `boston-weekend-alerts`, an SNS topic with an optional email subscription;
+- CloudWatch alarms for all three Lambdas, failed Step Functions executions,
+  and visible messages in the scheduler DLQ.
+
+After updating the stack, confirm the SNS subscription from the email sent by
+AWS. Until that link is confirmed, the subscription remains `PendingConfirmation`
+and alarms cannot deliver email to it.
 
 The new schedules use `America/New_York` and are documented in
 `content-schedule.md`. After all three targets have passed independent tests:
@@ -164,6 +177,23 @@ The new schedules use `America/New_York` and are documented in
 4. Disable `boston-weekend-agent-daily-run-rule` so the old daily full workflow
    cannot continue making unnecessary LLM calls.
 5. Do not delete the old rule until the new schedules have run successfully.
+
+### Failure boundaries
+
+The scheduler DLQ receives an event only when EventBridge Scheduler exhausts
+its retries while trying to invoke its target. It does not receive a Lambda
+exception after a successful invocation, nor a later failure inside the Step
+Functions workflow. Those failures are covered separately by the Lambda and
+Step Functions CloudWatch alarms.
+
+To inspect a delivery failure in the AWS Console, open **SQS**, choose
+`boston-weekend-scheduler-dlq`, and use **Send and receive messages** to poll for
+messages. After resolving and replaying the failure, delete only the messages
+you have verified; otherwise the queue alarm remains in `ALARM`.
+
+To inspect processing failures, open **CloudWatch > Alarms > All alarms**, then
+follow the affected resource to its CloudWatch Logs or Step Functions execution
+history. The five alarm names all begin with `boston-weekend-`.
 
 ## Enable Step Functions execution logging
 

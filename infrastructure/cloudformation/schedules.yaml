@@ -8,8 +8,42 @@ Parameters:
     Type: String
   WeekendStateMachineArn:
     Type: String
+  AlertEmail:
+    Type: String
+    Default: ""
+    Description: Optional email address for failure alerts. Leave blank to skip the email subscription.
+
+Conditions:
+  HasAlertEmail: !Not [!Equals [!Ref AlertEmail, ""]]
 
 Resources:
+  SchedulerDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: boston-weekend-scheduler-dlq
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+      Tags:
+        - Key: Project
+          Value: boston-weekend-agent
+
+  FailureAlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: boston-weekend-alerts
+      DisplayName: Boston Weekend Agent alerts
+      Tags:
+        - Key: Project
+          Value: boston-weekend-agent
+
+  FailureAlertsEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlertEmail
+    Properties:
+      Protocol: email
+      Endpoint: !Ref AlertEmail
+      TopicArn: !Ref FailureAlertsTopic
+
   SchedulerExecutionRole:
     Type: AWS::IAM::Role
     Properties:
@@ -34,6 +68,9 @@ Resources:
               - Effect: Allow
                 Action: states:StartExecution
                 Resource: !Ref WeekendStateMachineArn
+              - Effect: Allow
+                Action: sqs:SendMessage
+                Resource: !GetAtt SchedulerDeadLetterQueue.Arn
 
   DailyCollectionSchedule:
     Type: AWS::Scheduler::Schedule
@@ -49,6 +86,8 @@ Resources:
         Arn: !Ref CollectorFunctionArn
         RoleArn: !GetAtt SchedulerExecutionRole.Arn
         Input: '{"trigger":"daily-collection"}'
+        DeadLetterConfig:
+          Arn: !GetAtt SchedulerDeadLetterQueue.Arn
         RetryPolicy:
           MaximumEventAgeInSeconds: 3600
           MaximumRetryAttempts: 2
@@ -67,6 +106,8 @@ Resources:
         Arn: !Ref DailySocialFunctionArn
         RoleArn: !GetAtt SchedulerExecutionRole.Arn
         Input: '{"trigger":"daily-social"}'
+        DeadLetterConfig:
+          Arn: !GetAtt SchedulerDeadLetterQueue.Arn
         RetryPolicy:
           MaximumEventAgeInSeconds: 3600
           MaximumRetryAttempts: 1
@@ -85,10 +126,118 @@ Resources:
         Arn: !Ref WeekendStateMachineArn
         RoleArn: !GetAtt SchedulerExecutionRole.Arn
         Input: '{"trigger":"scheduled-weekend-report"}'
+        DeadLetterConfig:
+          Arn: !GetAtt SchedulerDeadLetterQueue.Arn
         RetryPolicy:
           MaximumEventAgeInSeconds: 3600
           MaximumRetryAttempts: 1
 
+  CollectorErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: boston-weekend-collector-errors
+      AlarmDescription: The daily event collector Lambda returned one or more errors.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Select [6, !Split [":", !Ref CollectorFunctionArn]]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref FailureAlertsTopic
+
+  DailySocialErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: boston-weekend-daily-social-errors
+      AlarmDescription: The daily social content Lambda returned one or more errors.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Select [6, !Split [":", !Ref DailySocialFunctionArn]]
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref FailureAlertsTopic
+
+  LangChainReportErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: boston-weekend-langchain-report-errors
+      AlarmDescription: The weekend report Lambda returned one or more errors.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: langchain_report
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref FailureAlertsTopic
+
+  WeekendWorkflowFailuresAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: boston-weekend-workflow-failures
+      AlarmDescription: The weekend Step Functions workflow failed.
+      Namespace: AWS/States
+      MetricName: ExecutionsFailed
+      Dimensions:
+        - Name: StateMachineArn
+          Value: !Ref WeekendStateMachineArn
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref FailureAlertsTopic
+
+  SchedulerDeadLetterMessagesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: boston-weekend-scheduler-dlq-messages
+      AlarmDescription: EventBridge Scheduler could not deliver one or more scheduled invocations.
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt SchedulerDeadLetterQueue.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref FailureAlertsTopic
+
 Outputs:
   SchedulerExecutionRoleArn:
     Value: !GetAtt SchedulerExecutionRole.Arn
+  SchedulerDeadLetterQueueArn:
+    Value: !GetAtt SchedulerDeadLetterQueue.Arn
+  SchedulerDeadLetterQueueUrl:
+    Value: !Ref SchedulerDeadLetterQueue
+  FailureAlertsTopicArn:
+    Value: !Ref FailureAlertsTopic

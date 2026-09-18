@@ -51,3 +51,15 @@ Until the platform connections are completed:
 The history is stored at `social/history.json`. This is sufficient for one
 scheduled writer; if multiple concurrent publishers are added later, migrate
 the cooldown records to DynamoDB conditional writes.
+
+## Failure handling
+
+Each EventBridge Scheduler target retries transient delivery failures, then
+sends an exhausted event to `boston-weekend-scheduler-dlq`. Messages are kept
+for 14 days for diagnosis and replay. CloudWatch sends an alert through the
+`boston-weekend-alerts` SNS topic when the DLQ has a visible message, a scheduled
+Lambda reports an error, or the weekend Step Functions execution fails.
+
+These controls intentionally cover two different failure stages: the DLQ
+protects delivery from Scheduler to its target, while the alarms monitor work
+that started successfully but failed during processing.
