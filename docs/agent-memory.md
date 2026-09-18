@@ -10,7 +10,7 @@
 
 ## Long-term preference memory
 
-Production memory 位于：
+Production memory 位於：
 
 ```text
 s3://boston-weekend-agent-reports/agent/bobo-memory.json
@@ -20,7 +20,7 @@ s3://boston-weekend-agent-reports/agent/bobo-memory.json
 `services/daily-social/memory.default.json` 是 S3 尚未建立時的安全預設，不是長期
 資料庫。
 
-每次 memory 更新都应：
+每次 memory 更新都應：
 
 1. 根據明確使用者回饋或累計成效資料提出變更，不讓模型只憑一次輸出自我強化。
 2. 將舊版複製到 `agent/memory-history/YYYY/MM/`。
@@ -28,5 +28,5 @@ s3://boston-weekend-agent-reports/agent/bobo-memory.json
 4. 經過人工 review 後才更新 `agent/bobo-memory.json`。
 5. 在 ranking analytics 中記錄當次使用的 memory version。
 
-初期可记录 `liked`、`not_interested`、`visited`、`too_far`、`worth_the_trip` 与
+初期可記錄 `liked`、`not_interested`、`visited`、`too_far`、`worth_the_trip` 與
 自由文字原因。累積至少三筆一致證據後，再將傾向整理進 `learned_preferences`。
