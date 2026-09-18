@@ -121,6 +121,29 @@ class LangChainReportTests(unittest.TestCase):
         self.assertIn("天氣很配合 〔•̀ᴗ•́〕و 可以出門。", rendered)
         self.assertTrue(rendered.endswith("— 波波 Bo ⌖ˎˊ˗ 〔•ᴗ•〕ゞ"))
 
+    def test_detects_varied_contextual_kaomoji_without_counting_asides(self):
+        text = (
+            "天氣很配合 〔•̀ᴗ•́〕و，可以出門（但記得帶外套）。"
+            "看到年度活動時真的會 \\(≧▽≦)/，最後再開心一下 "
+            "(((o(*ﾟ▽ﾟ*)o)))。"
+        )
+        matches = MODULE.extract_contextual_kaomoji(text)
+        self.assertEqual(len(matches), 3)
+        self.assertFalse(MODULE.extract_contextual_kaomoji("先散步（但記得帶外套）。"))
+
+    def test_contextual_kaomoji_contract_requires_two_varied_faces_per_language(self):
+        valid = {
+            "zh": {"title": "週末", "body": "出門 〔•̀ᴗ•́〕و，選擇困難 (≧▽≦)。"},
+            "en": {"title": "Weekend", "body": "Let's go 〔´ᴗ`〕～ or wander (•̀ᴗ•́)."},
+        }
+        MODULE.validate_contextual_kaomoji(valid)
+        invalid = {
+            **valid,
+            "zh": {"title": "週末", "body": "只有普通的括號（記得帶外套）。"},
+        }
+        with self.assertRaisesRegex(ValueError, "zh body needs at least 2"):
+            MODULE.validate_contextual_kaomoji(invalid)
+
     def test_parses_independent_language_reports(self):
         parsed = MODULE.parse_bilingual_report(
             __import__("json").dumps(

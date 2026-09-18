@@ -24,7 +24,7 @@ BUCKET_NAME = os.environ.get("REPORT_BUCKET", "boston-weekend-agent-reports")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6-luna")
 OPENAI_REASONING_EFFORT = os.environ.get("OPENAI_REASONING_EFFORT", "none")
 PROMPT_VERSION = os.environ.get(
-    "REPORT_PROMPT_VERSION", "v3.3-bobo-conversational"
+    "REPORT_PROMPT_VERSION", "v3.4-bobo-kaomoji-contract"
 )
 RANKING_PROMPT_VERSION = "ai-semantic-ranking-v1"
 BOBO_MEMORY_KEY = os.environ.get("BOBO_MEMORY_KEY", "agent/bobo-memory.json")
@@ -37,6 +37,13 @@ SECRETS = boto3.client("secretsmanager", region_name=AWS_REGION)
 
 EMOJI_PATTERN = re.compile(
     "[\\u2600-\\u27BF\\U0001F000-\\U0001FAFF\\uFE0F]"
+)
+KAOMOJI_PATTERNS = (
+    re.compile(r"〔[^〕\n]{2,40}〕[^\s\w]{0,3}"),
+    re.compile(
+        r"\([^()\n]{0,24}[▽▼△▲ωᴗ∀Дд益﹏・･ー^＾´`ﾟ°•ಠಥ≧≦><＞＜]"
+        r"[^()\n]{0,24}\)[^\s\w]{0,3}"
+    ),
 )
 
 
@@ -842,6 +849,50 @@ def parse_bilingual_report(content: Any) -> dict[str, dict[str, str]]:
     return parsed
 
 
+def extract_contextual_kaomoji(text: str) -> list[str]:
+    """Find expressive kaomoji without mistaking ordinary asides for faces."""
+    matches: list[str] = []
+    for pattern in KAOMOJI_PATTERNS:
+        matches.extend(match.group(0).strip() for match in pattern.finditer(text))
+    return matches
+
+
+def validate_contextual_kaomoji(
+    content: dict[str, dict[str, str]], minimum: int = 2
+) -> None:
+    for language in ("zh", "en"):
+        matches = extract_contextual_kaomoji(content[language]["body"])
+        if len(matches) < minimum or len(set(matches)) < minimum:
+            raise ValueError(
+                f"{language} body needs at least {minimum} varied contextual "
+                f"kaomoji; found {len(matches)} ({len(set(matches))} unique)"
+            )
+
+
+def build_kaomoji_repair_prompt():
+    from langchain_core.prompts import ChatPromptTemplate
+
+    return ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                """You are editing a bilingual Boston weekend letter written by
+波波 Bo. Return strict JSON with exactly `zh` and `en`, each containing exactly
+`title` and `body` strings. Preserve every fact, event, date, temperature, URL,
+heading, language, and overall meaning from the draft. Do not add or remove an
+event. Do not add a signature or Unicode emoji.
+
+Repair only the conversational voice: each body must contain 2-4 different
+kaomoji naturally inside sentences at genuine emotional turns. They must not be
+standalone lines, paragraph prefixes, or titles. Vary their shapes; examples of
+the range include 〔•̀ᴗ•́〕و, \\(≧▽≦)/, and (((o(*ﾟ▽ﾟ*)o))). Keep natural Taiwan
+Traditional Chinese in `zh` and natural English in `en`.""",
+            ),
+            ("human", "Repair this draft JSON:\n{draft_json}"),
+        ]
+    )
+
+
 def select_report_kaomoji(events: list[dict[str, Any]], now: datetime) -> str:
     persona = load_persona()
     event_names = sorted(str(event.get("name") or "") for event in events)
@@ -900,32 +951,57 @@ def generate_report(
     top_pick = recommendations.get("top_pick") or {}
 
     model = ChatOpenAI(**chat_model_options(get_openai_api_key(), 0.4))
-    result = (build_prompt() | model).invoke(
-        {
-            **context,
-            "edition": edition,
-            "holiday_context": ", ".join(context["holidays"]) or "None",
-            "best_day": top_pick.get("date", "Unknown"),
-            "best_time": top_pick.get("time_window", "Unknown"),
-            "temperature_zh": top_pick.get("temperature", "Unknown"),
-            "temperature_en": fahrenheit_temperature_text(
-                top_pick.get("temperature", "Unknown")
-            ),
-            "rain_chance": top_pick.get("rain_chance", "Unknown"),
-            "events": format_events(events),
-            "event_changes": format_event_changes(changes_data or {}),
-        }
-    )
-    mood_kaomoji = select_report_kaomoji(events, now)
+    prompt_values = {
+        **context,
+        "edition": edition,
+        "holiday_context": ", ".join(context["holidays"]) or "None",
+        "best_day": top_pick.get("date", "Unknown"),
+        "best_time": top_pick.get("time_window", "Unknown"),
+        "temperature_zh": top_pick.get("temperature", "Unknown"),
+        "temperature_en": fahrenheit_temperature_text(
+            top_pick.get("temperature", "Unknown")
+        ),
+        "rain_chance": top_pick.get("rain_chance", "Unknown"),
+        "events": format_events(events),
+        "event_changes": format_event_changes(changes_data or {}),
+    }
+    result = (build_prompt() | model).invoke(prompt_values)
+    writing_results = [result]
     parsed_report = parse_bilingual_report(result.content)
+    try:
+        validate_contextual_kaomoji(parsed_report)
+    except ValueError as error:
+        LOGGER.warning("Retrying report voice contract: %s", error)
+        repaired = (build_kaomoji_repair_prompt() | model).invoke(
+            {"draft_json": json.dumps(parsed_report, ensure_ascii=False)}
+        )
+        writing_results.append(repaired)
+        parsed_report = parse_bilingual_report(repaired.content)
+        validate_contextual_kaomoji(parsed_report)
+
+    mood_kaomoji = select_report_kaomoji(events, now)
     report_zh = finalize_language_report(parsed_report["zh"], mood_kaomoji)
     report_en = finalize_language_report(parsed_report["en"], mood_kaomoji)
     report = f"{report_zh}\n\n—— English ——\n\n{report_en}"
-    usage_metadata = getattr(result, "usage_metadata", None)
-    if not usage_metadata:
-        usage_metadata = getattr(result, "response_metadata", {}).get(
-            "token_usage", {}
+    writing_stages = []
+    for index, writing_result in enumerate(writing_results, start=1):
+        usage_metadata = getattr(writing_result, "usage_metadata", None)
+        if not usage_metadata:
+            usage_metadata = getattr(writing_result, "response_metadata", {}).get(
+                "token_usage", {}
+            )
+        writing_stages.append(
+            {
+                "stage": "draft" if index == 1 else "kaomoji-repair",
+                "token_usage": usage_metadata or {},
+            }
         )
+    writing_metadata = {
+        "openai_call_count": len(writing_results),
+        "retried": len(writing_results) > 1,
+        "stages": writing_stages,
+        "token_usage": sum_token_usage(writing_stages),
+    }
     return {
         "report": report,
         "languages": {
@@ -951,7 +1027,9 @@ def generate_report(
             "mood_kaomoji": mood_kaomoji,
         },
         "ranking": ranking_metadata,
-        "openai_call_count": ranking_metadata.get("openai_call_count", 0) + 1,
+        "writing": writing_metadata,
+        "openai_call_count": ranking_metadata.get("openai_call_count", 0)
+        + writing_metadata["openai_call_count"],
         "ranked_events": [
             {
                 "event_id": event.get("event_id"),
@@ -961,7 +1039,7 @@ def generate_report(
             }
             for rank, event in enumerate(events, start=1)
         ],
-        "token_usage": usage_metadata or {},
+        "token_usage": writing_metadata["token_usage"],
         "context": context,
     }
 
@@ -1051,6 +1129,7 @@ def store_analytics_manifest(
         "prompt_version": result["prompt_version"],
         "persona": result.get("persona"),
         "ranking": result.get("ranking"),
+        "writing": result.get("writing"),
         "ranked_events": result.get("ranked_events"),
         "openai_call_count": result.get("openai_call_count"),
         "token_usage": result["token_usage"],

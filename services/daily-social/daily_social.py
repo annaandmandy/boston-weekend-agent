@@ -60,6 +60,13 @@ SECRETS = boto3.client("secretsmanager", region_name=AWS_REGION)
 EMOJI_PATTERN = re.compile(
     "[\\u2600-\\u27BF\\U0001F000-\\U0001FAFF\\uFE0F]"
 )
+KAOMOJI_PATTERNS = (
+    re.compile(r"〔[^〕\n]{2,40}〕[^\s\w]{0,3}"),
+    re.compile(
+        r"\([^()\n]{0,24}[▽▼△▲ωᴗ∀Дд益﹏・･ー^＾´`ﾟ°•ಠಥ≧≦><＞＜]"
+        r"[^()\n]{0,24}\)[^\s\w]{0,3}"
+    ),
+)
 
 
 @lru_cache(maxsize=1)
@@ -433,6 +440,7 @@ def ai_rank_social_events(
     return parse_ai_rankings(result.content, candidates), {
         "model": OPENAI_MODEL,
         "prompt_version": RANKING_PROMPT_VERSION,
+        "openai_call_count": 1,
         "token_usage": usage or {},
         "candidate_count": len(candidates),
         "memory_version": memory.get("memory_version"),
@@ -572,6 +580,47 @@ def parse_model_json(content: Any) -> dict[str, Any]:
     return result
 
 
+def extract_contextual_kaomoji(text: str) -> list[str]:
+    """Find expressive kaomoji without mistaking ordinary asides for faces."""
+    matches: list[str] = []
+    for pattern in KAOMOJI_PATTERNS:
+        matches.extend(match.group(0).strip() for match in pattern.finditer(text))
+    return matches
+
+
+def validate_contextual_kaomoji(content: dict[str, Any], minimum: int = 2) -> None:
+    for language in ("zh", "en"):
+        matches = extract_contextual_kaomoji(content[language]["body"])
+        if len(matches) < minimum or len(set(matches)) < minimum:
+            raise ValueError(
+                f"{language} body needs at least {minimum} varied contextual "
+                f"kaomoji; found {len(matches)} ({len(set(matches))} unique)"
+            )
+
+
+def build_kaomoji_repair_prompt():
+    from langchain_core.prompts import ChatPromptTemplate
+
+    return ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                """You are editing one bilingual social post written by 波波 Bo.
+Return strict JSON with exactly `zh`, `en`, and `hashtags`. Preserve every fact,
+event, date, time, price, venue, URL, hashtag, language, and overall meaning from
+the draft. Do not add or remove an event. Do not add a signature or Unicode emoji.
+
+Repair only the conversational voice: each language body must contain 2-3
+different kaomoji naturally inside sentences at genuine emotional turns. They
+must not be standalone lines, paragraph prefixes, or titles. Vary their shapes;
+examples of the range include 〔•̀ᴗ•́〕و, \\(≧▽≦)/, and (((o(*ﾟ▽ﾟ*)o))). Keep
+natural Taiwan Traditional Chinese in `zh` and natural English in `en`.""",
+            ),
+            ("human", "Repair this draft JSON:\n{draft_json}"),
+        ]
+    )
+
+
 def generate_content(
     events: list[dict[str, Any]], now: datetime
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -586,13 +635,45 @@ def generate_content(
             "website_url": WEBSITE_URL,
         }
     )
-    usage = getattr(response, "usage_metadata", None) or getattr(
-        response, "response_metadata", {}
-    ).get("token_usage", {})
-    return parse_model_json(response.content), {
+    responses = [response]
+    content = parse_model_json(response.content)
+    try:
+        validate_contextual_kaomoji(content)
+    except ValueError as error:
+        LOGGER.warning("Retrying social voice contract: %s", error)
+        repaired = (build_kaomoji_repair_prompt() | model).invoke(
+            {"draft_json": json.dumps(content, ensure_ascii=False)}
+        )
+        responses.append(repaired)
+        content = parse_model_json(repaired.content)
+        validate_contextual_kaomoji(content)
+
+    stages = []
+    for index, item in enumerate(responses, start=1):
+        usage = getattr(item, "usage_metadata", None) or getattr(
+            item, "response_metadata", {}
+        ).get("token_usage", {})
+        stages.append(
+            {
+                "stage": "draft" if index == 1 else "kaomoji-repair",
+                "token_usage": usage or {},
+            }
+        )
+    token_keys = ("input_tokens", "output_tokens", "total_tokens")
+    token_usage = {
+        key: sum(
+            int((stage["token_usage"] or {}).get(key, 0) or 0)
+            for stage in stages
+        )
+        for key in token_keys
+    }
+    return content, {
         "model": OPENAI_MODEL,
-        "prompt_version": "bobo-social-story-v4",
-        "token_usage": usage or {},
+        "prompt_version": "bobo-social-story-v5-kaomoji-contract",
+        "openai_call_count": len(responses),
+        "retried": len(responses) > 1,
+        "stages": stages,
+        "token_usage": token_usage,
     }
 
 
@@ -890,7 +971,10 @@ def store_campaign(
         },
         "ranking_run": ranking_metadata or {},
         "writing_run": writing_metadata or {},
-        "openai_call_count": 2,
+        "openai_call_count": (ranking_metadata or {}).get(
+            "openai_call_count", 1
+        )
+        + (writing_metadata or {}).get("openai_call_count", 1),
         "selection_decisions": [
             {
                 "event_id": event["event_id"],
@@ -993,7 +1077,8 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             "success": True,
             "dry_run": True,
             "generated_at": now.isoformat(),
-            "openai_call_count": 2,
+            "openai_call_count": ranking_metadata.get("openai_call_count", 1)
+            + writing_metadata.get("openai_call_count", 1),
             "ranking_run": ranking_metadata,
             "writing_run": writing_metadata,
             "selected_event_ids": [item["event_id"] for item in selected],

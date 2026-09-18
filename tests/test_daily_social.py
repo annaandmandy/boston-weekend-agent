@@ -328,6 +328,30 @@ class DailySocialTests(unittest.TestCase):
         self.assertIn("〔•̀ᴗ•́〕و", content["zh"]["body"])
         self.assertIn("〔´ᴗ`〕～", content["en"]["body"])
 
+    def test_detects_varied_contextual_kaomoji_without_counting_asides(self):
+        text = (
+            "天氣很配合 〔•̀ᴗ•́〕و，可以出門（但記得帶外套）。"
+            "看到年度活動時真的會 \\(≧▽≦)/，最後再開心一下 "
+            "(((o(*ﾟ▽ﾟ*)o)))。"
+        )
+        matches = MODULE.extract_contextual_kaomoji(text)
+        self.assertEqual(len(matches), 3)
+        self.assertFalse(MODULE.extract_contextual_kaomoji("先散步（但記得帶外套）。"))
+
+    def test_contextual_kaomoji_contract_requires_two_varied_faces_per_language(self):
+        valid = {
+            "zh": {"title": "今日活動", "body": "出門 〔•̀ᴗ•́〕و，選擇困難 (≧▽≦)。"},
+            "en": {"title": "Today", "body": "Let's go 〔´ᴗ`〕～ or wander (•̀ᴗ•́)."},
+            "hashtags": ["Boston"],
+        }
+        MODULE.validate_contextual_kaomoji(valid)
+        invalid = {
+            **valid,
+            "en": {"title": "Today", "body": "Only a normal aside (bring a coat)."},
+        }
+        with self.assertRaisesRegex(ValueError, "en body needs at least 2"):
+            MODULE.validate_contextual_kaomoji(invalid)
+
     def test_kaomoji_is_deterministic_for_same_campaign(self):
         now = datetime(2026, 9, 17, 7, tzinfo=ZoneInfo("America/New_York"))
         events = [
