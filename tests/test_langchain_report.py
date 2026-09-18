@@ -187,6 +187,24 @@ class LangChainReportTests(unittest.TestCase):
                     "markdown": "Temperature 68°F",
                 },
             },
+            "activities": [
+                {
+                    "event_id": "event-1",
+                    "title": "Open Studios",
+                    "url": "https://example.com/event-1",
+                    "date": "2026-09-19",
+                    "time": "12:00 PM",
+                    "location": "Cambridge",
+                    "city": "Cambridge",
+                    "price": "Free",
+                    "price_type": "free",
+                    "category": "Arts",
+                    "source": "City calendar",
+                    "description": "Open studios across Cambridge.",
+                    "distance_miles": 2.5,
+                    "recommendation_score": 82,
+                }
+            ],
         }
         try:
             keys = MODULE.store_report(result, now)
@@ -200,8 +218,34 @@ class LangChainReportTests(unittest.TestCase):
             if call.kwargs["Key"] == "reports/weekend_summary.json"
         )
         payload = __import__("json").loads(latest_json_call.kwargs["Body"])
+        self.assertEqual(payload["schema_version"], 2)
         self.assertEqual(payload["languages"]["zh"]["temperature_unit"], "C")
         self.assertEqual(payload["languages"]["en"]["temperature_unit"], "F")
+        self.assertEqual(payload["activities"][0]["title"], "Open Studios")
+
+    def test_public_activity_is_sanitized_and_classifies_price(self):
+        activity = MODULE.public_activity(
+            {
+                "event_id": "event-1",
+                "name": "Harbor Festival",
+                "link": "https://example.com/event-1",
+                "date": "2026-09-19",
+                "time": "1:00 PM",
+                "location": "Revere Beach",
+                "city": "Revere",
+                "price": "Free admission",
+                "category": "Festival",
+                "source": "City of Revere",
+                "description": "Lots of   spaces\nwith a new line.",
+                "recommendation": {"distance_miles": 8.2},
+                "recommendation_score": 91,
+                "content_hash": "must-not-be-public",
+            }
+        )
+        self.assertEqual(activity["price_type"], "free")
+        self.assertEqual(activity["description"], "Lots of spaces with a new line.")
+        self.assertEqual(activity["distance_miles"], 8.2)
+        self.assertNotIn("content_hash", activity)
 
     def test_luna_uses_reasoning_effort_without_temperature(self):
         original_model = MODULE.OPENAI_MODEL

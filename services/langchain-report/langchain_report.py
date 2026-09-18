@@ -717,6 +717,39 @@ def format_events(events: list[dict[str, Any]], limit: int = 8) -> str:
     return "\n".join(lines)
 
 
+def public_activity(event: dict[str, Any]) -> dict[str, Any]:
+    """Return the deterministic, public-safe fields used by the website table."""
+    price = str(event.get("price") or "").strip()
+    price_lower = price.lower()
+    if "free" in price_lower or price_lower in {"$0", "$0.00", "0"}:
+        price_type = "free"
+    elif re.search(r"\$\s*\d", price):
+        price_type = "paid"
+    else:
+        price_type = "unknown"
+
+    recommendation = event.get("recommendation") or {}
+    description = re.sub(r"\s+", " ", str(event.get("description") or "")).strip()
+    return {
+        "event_id": str(event.get("event_id") or ""),
+        "title": str(event.get("name") or "Untitled event"),
+        "url": str(event.get("link") or ""),
+        "date": str(event.get("date") or ""),
+        "time": str(event.get("time") or ""),
+        "location": str(event.get("location") or ""),
+        "city": str(event.get("city") or ""),
+        "price": price,
+        "price_type": price_type,
+        "category": str(event.get("category") or ""),
+        "source": str(event.get("source") or ""),
+        "description": description[:500],
+        "distance_miles": recommendation.get("distance_miles"),
+        "recommendation_score": event.get(
+            "recommendation_score", event.get("quality_score")
+        ),
+    }
+
+
 def format_event_changes(changes: dict[str, Any], limit: int = 6) -> str:
     lines = []
     for event in changes.get("new", [])[:limit]:
@@ -988,6 +1021,7 @@ def generate_report(
     context = build_time_context(now)
     edition = determine_edition(now, edition_override)
     candidates = filter_and_prioritize_events(events_data, now)
+    activities = [public_activity(event) for event in candidates]
     memory = load_bobo_memory()
     events, ranking_metadata = ai_rank_weekend_events(candidates, memory)
     recommendations = (weather_data.get("summary") or {}).get("recommendations") or {}
@@ -1059,6 +1093,7 @@ def generate_report(
                 "markdown": report_en,
             },
         },
+        "activities": activities,
         "generated_at": now.isoformat(),
         "events_count": len(events),
         "edition": edition,
@@ -1103,10 +1138,11 @@ def store_report(result: dict[str, Any], now: datetime) -> dict[str, str]:
             ContentType="text/plain; charset=utf-8",
         )
     json_payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at": result["generated_at"],
         "edition": result["edition"],
         "languages": result["languages"],
+        "activities": result.get("activities", []),
     }
     json_body = json.dumps(json_payload, ensure_ascii=False, indent=2).encode("utf-8")
     timestamped_json_key = (
