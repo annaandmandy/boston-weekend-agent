@@ -67,40 +67,78 @@ class DailySocialTests(unittest.TestCase):
     def test_renders_one_identical_shared_post(self):
         content = {
             "zh": {
-                "title": "Boston 今日活动",
-                "body": "今天可以去公园听音乐。",
+                "title": "Boston 今日活動",
+                "body": "今天可以去公園聽音樂。",
             },
             "en": {
                 "title": "What's on in Boston today",
                 "body": "Listen to live music in the park today.",
             },
-            "hashtags": ["Boston", "波士顿生活"],
+            "hashtags": ["Boston", "波士頓生活"],
         }
         rendered = MODULE.render_shared_text(content)
-        self.assertIn("Boston 今日活动", rendered)
+        self.assertIn("Boston 今日活動", rendered)
         self.assertLess(
-            rendered.index("Boston 今日活动"),
+            rendered.index("Boston 今日活動"),
             rendered.index("What's on in Boston today"),
         )
         self.assertIn("—— English ——", rendered)
-        self.assertIn("#Boston #波士顿生活", rendered)
+        self.assertIn("#Boston #波士頓生活", rendered)
+        self.assertIn("— 波波 ⌖ˎˊ˗ 〔•ᴗ•〕ゞ", rendered)
 
     def test_parses_structured_bilingual_content(self):
         content = MODULE.parse_model_json(
             """{
-                "zh": {"title": "今日活动", "body": "中文内容"},
+                "zh": {"title": "今日活動", "body": "中文內容"},
                 "en": {"title": "Today's events", "body": "English copy"},
-                "hashtags": ["#Boston", "周末去哪"]
+                "hashtags": ["#Boston", "週末去哪"]
             }"""
         )
-        self.assertEqual(content["zh"]["body"], "中文内容")
+        self.assertEqual(content["zh"]["body"], "中文內容")
         self.assertEqual(content["en"]["body"], "English copy")
-        self.assertEqual(content["hashtags"], ["Boston", "周末去哪"])
+        self.assertEqual(content["hashtags"], ["Boston", "週末去哪"])
 
     def test_prompt_requires_traditional_chinese(self):
         prompt_text = str(MODULE.build_prompt())
         self.assertIn("Traditional Chinese", prompt_text)
         self.assertIn("Never use Simplified Chinese", prompt_text)
+        self.assertIn("instead of a numbered or repetitive list", prompt_text)
+        self.assertIn("Do not place emoji", prompt_text)
+
+    def test_rejects_model_generated_emoji(self):
+        with self.assertRaisesRegex(ValueError, "contained emoji"):
+            MODULE.parse_model_json(
+                """{
+                    "zh": {"title": "今日活動", "body": "出門走走☀️"},
+                    "en": {"title": "Today", "body": "Go outside"},
+                    "hashtags": ["Boston"]
+                }"""
+            )
+
+    def test_kaomoji_is_deterministic_for_same_campaign(self):
+        now = datetime(2026, 9, 17, 7, tzinfo=ZoneInfo("America/New_York"))
+        events = [
+            {
+                "event_id": "music-1",
+                "name": "Live jazz by the harbor",
+                "date": "2026-09-17",
+            }
+        ]
+        first = MODULE.select_kaomoji(events, now)
+        second = MODULE.select_kaomoji(events, now)
+        self.assertEqual(first, second)
+        self.assertTrue(first.startswith("⌖ˎˊ˗"))
+
+    def test_render_adds_one_mood_face_and_fixed_signature(self):
+        content = {
+            "zh": {"title": "今晚去哪裡", "body": "散步看表演。"},
+            "en": {"title": "Tonight in Boston", "body": "Take a walk."},
+            "hashtags": ["Boston"],
+        }
+        mood = "⌖ˎˊ˗ 〔✦ᴗ✦〕ノ"
+        rendered = MODULE.render_shared_text(content, mood)
+        self.assertEqual(rendered.count(mood), 1)
+        self.assertTrue(rendered.endswith("— 波波 ⌖ˎˊ˗ 〔•ᴗ•〕ゞ"))
 
     def test_campaign_archive_key_is_immutable_for_retries(self):
         original_s3 = MODULE.S3

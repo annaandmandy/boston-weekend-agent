@@ -58,6 +58,7 @@ infrastructure/
   cloudformation/       Timezone-aware EventBridge Scheduler resources
 docs/
   deployment.md         Manual deployment and verification procedure
+  persona.md            Voice, editorial style, and kaomoji identity for Bo
   event-sources.md       Active and candidate Greater Boston sources
   analytics-history.md   Immutable report inputs and lineage manifest
   migration-checklist.md

@@ -12,6 +12,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -44,6 +45,16 @@ EASTERN = ZoneInfo("America/New_York")
 
 S3 = boto3.client("s3", region_name=AWS_REGION)
 SECRETS = boto3.client("secretsmanager", region_name=AWS_REGION)
+
+EMOJI_PATTERN = re.compile(
+    "[\\u2600-\\u27BF\\U0001F000-\\U0001FAFF\\uFE0F]"
+)
+
+
+@lru_cache(maxsize=1)
+def load_persona() -> dict[str, Any]:
+    path = Path(__file__).with_name("persona.json")
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 @lru_cache(maxsize=1)
@@ -248,11 +259,22 @@ def format_events(events: list[dict[str, Any]]) -> str:
 def build_prompt():
     from langchain_core.prompts import ChatPromptTemplate
 
+    persona = load_persona()
+    voice = "; ".join(persona["voice"])
+    content_style = "; ".join(persona["content_style"])
+    forbidden = "; ".join(persona["forbidden"])
+
     return ChatPromptTemplate.from_messages(
         [
             (
                 "system",
-                """You write one shared bilingual social post that will be used
+                f"""You are {persona['display_name']}: {persona['role']}
+
+Voice: {voice}
+Editorial style: {content_style}
+Never do any of the following: {forbidden}
+
+You write one shared bilingual social post that will be used
 unchanged on both Threads and Xiaohongshu. Use only facts supplied below. Never
 invent dates, times, prices, venues, availability, or cancellation status.
 
@@ -264,7 +286,8 @@ each body concise, friendly, and useful to people living around Greater Boston.
 Mention 3-5 activities when available, preserve their source links, and end each
 body with the weekend-report URL. Use plain text and raw URLs; do not use Markdown
 link syntax because the same copy is published directly to both platforms. Do not
-claim that an event is recommended from personal experience.
+claim that an event is recommended from personal experience. Do not place emoji
+or kaomoji in the generated fields; the application adds Bo's chosen expressions.
 
 Return strict JSON with exactly these top-level keys: zh, en, hashtags. `zh` and
 `en` must each contain exactly `title` and `body` strings. `hashtags` must be an
@@ -301,6 +324,9 @@ def parse_model_json(content: Any) -> dict[str, Any]:
     if not isinstance(hashtags, list):
         raise ValueError("Model response did not contain a hashtags array")
     result["hashtags"] = [str(tag).lstrip("#") for tag in hashtags]
+    generated_text = json.dumps(result, ensure_ascii=False)
+    if EMOJI_PATTERN.search(generated_text):
+        raise ValueError("Model response contained emoji")
     return result
 
 
@@ -319,15 +345,41 @@ def generate_content(events: list[dict[str, Any]], now: datetime) -> dict[str, A
     return parse_model_json(response.content)
 
 
-def render_shared_text(content: dict[str, Any]) -> str:
+def select_kaomoji(events: list[dict[str, Any]], now: datetime) -> str:
+    persona = load_persona()
+    seed_text = "|".join(
+        [now.strftime("%Y-%m-%d"), "daily-social"]
+        + sorted(str(event.get("event_id") or _fallback_event_id(event)) for event in events)
+    )
+    seed = int(hashlib.sha256(seed_text.encode("utf-8")).hexdigest()[:16], 16)
+    searchable = json.dumps(events, ensure_ascii=False).lower()
+    themed: list[str] = []
+    for group in persona.get("themed_expressions", []):
+        if any(str(keyword).lower() in searchable for keyword in group["keywords"]):
+            themed.extend(str(expression) for expression in group["expressions"])
+
+    common = [str(expression) for expression in persona["common_expressions"]]
+    common_weight = int(persona.get("common_expression_weight", 70))
+    pool = themed if themed and seed % 100 >= common_weight else common
+    return pool[(seed // 100) % len(pool)]
+
+
+def render_shared_text(
+    content: dict[str, Any], mood_kaomoji: str | None = None
+) -> str:
+    persona = load_persona()
     hashtags = " ".join(f"#{tag}" for tag in content["hashtags"])
+    title = content["zh"]["title"]
+    if mood_kaomoji:
+        title = f"{title} {mood_kaomoji}"
     return (
-        f"{content['zh']['title']}\n\n"
+        f"{title}\n\n"
         f"{content['zh']['body']}\n\n"
         "—— English ——\n\n"
         f"{content['en']['title']}\n\n"
         f"{content['en']['body']}\n\n"
-        f"{hashtags}"
+        f"{hashtags}\n\n"
+        f"{persona['signoff']}"
     ).strip()
 
 
@@ -450,6 +502,7 @@ def store_campaign(
     history: dict[str, Any],
     now: datetime,
     threads_state: dict[str, Any] | None = None,
+    mood_kaomoji: str | None = None,
 ) -> dict[str, str]:
     campaign_id = now.strftime("%Y-%m-%d")
     event_ids = [event["event_id"] for event in events]
@@ -457,8 +510,13 @@ def store_campaign(
         "campaign_id": campaign_id,
         "generated_at": now.isoformat(),
         "content": content,
-        "shared_text": render_shared_text(content),
+        "shared_text": render_shared_text(content, mood_kaomoji),
         "selected_event_ids": event_ids,
+        "persona": {
+            "id": load_persona()["id"],
+            "version": load_persona()["version"],
+            "mood_kaomoji": mood_kaomoji,
+        },
         "platforms": {
             "threads": threads_state or {"status": "ready"},
             "xiaohongshu": {"status": "manual_draft"},
@@ -525,11 +583,14 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     selected = select_social_events(events_data, history, now)
     if not selected:
         raise RuntimeError("No eligible events remain after the 48-hour cooldown")
+    mood_kaomoji = select_kaomoji(selected, now)
     content = generate_content(selected, now)
-    keys = store_campaign(content, selected, history, now)
+    keys = store_campaign(
+        content, selected, history, now, mood_kaomoji=mood_kaomoji
+    )
     threads_result: dict[str, Any] = {"status": "disabled"}
     if THREADS_PUBLISH_ENABLED:
-        shared_text = render_shared_text(content)
+        shared_text = render_shared_text(content, mood_kaomoji)
         claim = {
             "campaign_id": now.strftime("%Y-%m-%d"),
             "status": "publishing",
@@ -556,6 +617,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 history,
                 now,
                 threads_state={"status": "failed"},
+                mood_kaomoji=mood_kaomoji,
             )
             raise
         threads_result = {
@@ -575,6 +637,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             history,
             now,
             threads_state=threads_result,
+            mood_kaomoji=mood_kaomoji,
         )
     result = {
         "success": True,

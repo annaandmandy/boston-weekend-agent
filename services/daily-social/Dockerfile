@@ -5,5 +5,6 @@ RUN pip install --no-cache-dir --only-binary=:all: tiktoken==0.7.0
 RUN pip install --no-cache-dir -r ${LAMBDA_TASK_ROOT}/requirements.txt
 
 COPY daily_social.py ${LAMBDA_TASK_ROOT}/daily_social.py
+COPY persona.json ${LAMBDA_TASK_ROOT}/persona.json
 
 CMD ["daily_social.lambda_handler"]
