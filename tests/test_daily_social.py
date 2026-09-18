@@ -303,7 +303,11 @@ class DailySocialTests(unittest.TestCase):
         self.assertIn("never a quota or veto", prompt_text)
         self.assertIn("local_significance", prompt_text)
         rendered = prompt.format(
-            persona_json="{}", memory_json="{}", events_json="[]"
+            persona_json="{}",
+            memory_json="{}",
+            events_json="[]",
+            candidate_count=0,
+            selection_count=0,
         )
         self.assertIn('{"rankings"', rendered)
 

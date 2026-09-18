@@ -27,7 +27,9 @@ AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 BUCKET_NAME = os.environ.get("REPORT_BUCKET", "boston-weekend-agent-reports")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6-luna")
 OPENAI_REASONING_EFFORT = os.environ.get("OPENAI_REASONING_EFFORT", "none")
-RANKING_PROMPT_VERSION = "ai-semantic-ranking-v1"
+RANKING_PROMPT_VERSION = "ai-global-top-10-v2"
+RANKING_TOP_K = 10
+RANKING_INPUT_TOKEN_BUDGET = 50_000
 WEBSITE_URL = os.environ.get(
     "WEBSITE_URL", "https://www.hsiangyuhuang.com/weekend_report"
 )
@@ -290,7 +292,7 @@ def build_ranking_prompt():
             (
                 "system",
                 """You are the semantic ranking editor for Boston Weekend Agent.
-Rank all supplied events together for a person based near Boston University who
+Compare all supplied events together in one global decision for a person based near Boston University who
 wants worthwhile leisure plans around Greater Boston. Python has already removed
 unavailable, out-of-window, and cooldown events; do not reverse those hard rules.
 
@@ -301,11 +303,14 @@ sculpting festival—may outrank an ordinary nearby event when the trip is worth
 Proximity is useful but never a quota or veto. Do not invent facts or claim an
 event is annual unless the supplied data supports that inference.
 
-Score every event from 0 to 100 using these dimensions, whose values must sum to
-the final score: leisure_appeal 0-25, local_significance 0-25, rarity 0-20,
-value 0-10, proximity_fit 0-10, information_confidence 0-10. Return each supplied
-event_id exactly once, ordered best to worst. Give concise Traditional Chinese
-and English reasons, plus destination_worthy and significance_signals.
+Evaluate every candidate comparatively, then score each selected top event from
+0 to 100 using these dimensions, whose values must sum to the final score:
+leisure_appeal 0-25, local_significance 0-25, rarity 0-20,
+value 0-10, proximity_fit 0-10, information_confidence 0-10. Return only the
+strongest {selection_count} events, ordered best to worst. Every returned event_id
+must come from the candidates and appear once. Do not return scores for candidates
+outside the selected top group. Give concise Traditional Chinese and English
+reasons, plus destination_worthy and significance_signals.
 
 Return strict JSON only:
 {{"rankings":[{{"event_id":"...","score":0,"dimensions":{{"leisure_appeal":0,
@@ -322,7 +327,10 @@ Versioned long-term preference memory:
 {memory_json}
 
 Rank these verified candidate events:
-{events_json}""",
+{events_json}
+
+Candidate count: {candidate_count}
+Required ranking count: {selection_count}""",
             ),
         ]
     )
@@ -354,7 +362,11 @@ def compact_ranking_events(events: list[dict[str, Any]]) -> str:
     return json.dumps(compact, ensure_ascii=False)
 
 
-def parse_ai_rankings(content: Any, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def parse_ai_rankings(
+    content: Any,
+    candidates: list[dict[str, Any]],
+    top_k: int = RANKING_TOP_K,
+) -> list[dict[str, Any]]:
     text = re.sub(r"^```(?:json)?\s*|\s*```$", "", str(content).strip(), flags=re.I)
     payload = json.loads(text)
     rankings = payload.get("rankings")
@@ -362,10 +374,20 @@ def parse_ai_rankings(content: Any, candidates: list[dict[str, Any]]) -> list[di
         raise ValueError("AI ranking response did not contain a rankings array")
 
     by_id = {str(event["event_id"]): event for event in candidates}
-    expected_ids = set(by_id)
     returned_ids = [str(item.get("event_id")) for item in rankings]
-    if len(returned_ids) != len(set(returned_ids)) or set(returned_ids) != expected_ids:
-        raise ValueError("AI ranking response must contain every candidate exactly once")
+    expected_count = min(top_k, len(by_id))
+    if len(returned_ids) != expected_count:
+        raise ValueError(
+            f"AI ranking response must contain exactly {expected_count} events"
+        )
+    if len(returned_ids) != len(set(returned_ids)):
+        raise ValueError("AI ranking response contained duplicate event IDs")
+    unknown_ids = set(returned_ids) - set(by_id)
+    if unknown_ids:
+        raise ValueError(
+            "AI ranking response contained unknown event IDs: "
+            + ", ".join(sorted(unknown_ids))
+        )
 
     dimensions = {
         "leisure_appeal": 25,
@@ -420,29 +442,123 @@ def parse_ai_rankings(content: Any, candidates: list[dict[str, Any]]) -> list[di
     return sorted(ranked, key=lambda item: item["social_score"], reverse=True)
 
 
+def estimate_ranking_input_tokens(
+    candidates: list[dict[str, Any]], memory: dict[str, Any]
+) -> int:
+    prompt_text = "\n".join(
+        (
+            str(build_ranking_prompt()),
+            json.dumps(load_persona(), ensure_ascii=False),
+            json.dumps(memory, ensure_ascii=False),
+            compact_ranking_events(candidates),
+        )
+    )
+    # Byte-level tokenizers cannot produce more content tokens than UTF-8 bytes.
+    # Add a fixed allowance for chat-message framing so this remains a safe,
+    # offline upper bound even when tiktoken has not learned a new model name.
+    return len(prompt_text.encode("utf-8")) + 1024
+
+
+def invoke_ranking_attempt(
+    model: Any,
+    candidates: list[dict[str, Any]],
+    memory: dict[str, Any],
+    attempt: int,
+) -> tuple[list[dict[str, Any]] | None, dict[str, Any]]:
+    selection_count = min(RANKING_TOP_K, len(candidates))
+    result = (build_ranking_prompt() | model).invoke(
+        {
+            "persona_json": json.dumps(load_persona(), ensure_ascii=False),
+            "memory_json": json.dumps(memory, ensure_ascii=False),
+            "events_json": compact_ranking_events(candidates),
+            "candidate_count": len(candidates),
+            "selection_count": selection_count,
+        }
+    )
+    usage = getattr(result, "usage_metadata", None) or getattr(
+        result, "response_metadata", {}
+    ).get("token_usage", {})
+    stage = {
+        "stage": "global-top-10",
+        "attempt": attempt,
+        "candidate_count": len(candidates),
+        "requested_count": selection_count,
+        "token_usage": usage or {},
+    }
+    try:
+        ranked = parse_ai_rankings(result.content, candidates)
+    except (ValueError, TypeError, json.JSONDecodeError) as error:
+        stage.update(
+            {
+                "status": "invalid",
+                "validation_error": str(error),
+                "response_excerpt": str(result.content)[:2000],
+            }
+        )
+        LOGGER.warning("Ranking attempt %d failed validation: %s", attempt, error)
+        return None, stage
+    stage["status"] = "valid"
+    return ranked, stage
+
+
 def ai_rank_social_events(
     candidates: list[dict[str, Any]],
     memory: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     from langchain_openai import ChatOpenAI
 
-    model = ChatOpenAI(**chat_model_options(get_openai_api_key(), 0.2))
-    result = (build_ranking_prompt() | model).invoke(
-        {
-            "persona_json": json.dumps(load_persona(), ensure_ascii=False),
-            "memory_json": json.dumps(memory, ensure_ascii=False),
-            "events_json": compact_ranking_events(candidates),
+    if not candidates:
+        return [], {
+            "model": OPENAI_MODEL,
+            "prompt_version": RANKING_PROMPT_VERSION,
+            "candidate_count": 0,
+            "selected_count": 0,
+            "openai_call_count": 0,
+            "token_usage": {},
+            "status": "skipped_no_candidates",
         }
+
+    estimated_input_tokens = estimate_ranking_input_tokens(candidates, memory)
+    if estimated_input_tokens > RANKING_INPUT_TOKEN_BUDGET:
+        raise ValueError(
+            "Global ranking input exceeds the application safety budget: "
+            f"{estimated_input_tokens} > {RANKING_INPUT_TOKEN_BUDGET} tokens"
+        )
+
+    model = ChatOpenAI(
+        **chat_model_options(get_openai_api_key(), 0.2),
+        max_tokens=7000,
     )
-    usage = getattr(result, "usage_metadata", None) or getattr(
-        result, "response_metadata", {}
-    ).get("token_usage", {})
-    return parse_ai_rankings(result.content, candidates), {
+    stages = []
+    ranked = None
+    for attempt in (1, 2):
+        ranked, stage = invoke_ranking_attempt(model, candidates, memory, attempt)
+        stages.append(stage)
+        if ranked is not None:
+            break
+    if ranked is None:
+        LOGGER.error("Global ranking failed twice: %s", stages)
+        raise ValueError("AI global top-10 ranking failed validation twice")
+
+    token_keys = ("input_tokens", "output_tokens", "total_tokens")
+    token_usage = {
+        key: sum(
+            int((stage["token_usage"] or {}).get(key, 0) or 0)
+            for stage in stages
+        )
+        for key in token_keys
+    }
+    return ranked, {
         "model": OPENAI_MODEL,
         "prompt_version": RANKING_PROMPT_VERSION,
-        "openai_call_count": 1,
-        "token_usage": usage or {},
+        "strategy": "single-global-top-10",
+        "openai_call_count": len(stages),
+        "token_usage": token_usage,
         "candidate_count": len(candidates),
+        "selected_count": len(ranked),
+        "estimated_input_token_upper_bound": estimated_input_tokens,
+        "input_token_budget": RANKING_INPUT_TOKEN_BUDGET,
+        "stages": stages,
         "memory_version": memory.get("memory_version"),
     }
 

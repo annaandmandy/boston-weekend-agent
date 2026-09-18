@@ -38,7 +38,8 @@ On Friday this is recalculated against the archived Thursday baseline.
 - OpenAI model and prompt version;
 - separate ranking and writing model metadata and token usage;
 - the Bo persona and memory versions used for the decision;
-- every candidate's AI component scores, reasons, and final rank;
+- the complete eligible candidate input plus Bo's global top-10 AI component
+  scores, reasons, and final ranks;
 - Lambda request ID;
 - source keys, source VersionIds, ETags, and archived keys;
 - derived change and baseline objects;

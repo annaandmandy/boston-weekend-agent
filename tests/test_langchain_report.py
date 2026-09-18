@@ -88,7 +88,11 @@ class LangChainReportTests(unittest.TestCase):
         self.assertIn("reviewed long-term memory", prompt_text)
         self.assertIn("never a quota or veto", prompt_text)
         rendered = prompt.format(
-            persona_json="{}", memory_json="{}", events_json="[]"
+            persona_json="{}",
+            memory_json="{}",
+            events_json="[]",
+            candidate_count=0,
+            selection_count=0,
         )
         self.assertIn('{"rankings"', rendered)
 
@@ -213,42 +217,46 @@ class LangChainReportTests(unittest.TestCase):
         self.assertEqual(options["reasoning_effort"], "none")
         self.assertNotIn("temperature", options)
 
-    def test_weekend_ranking_reserves_output_for_all_candidates(self):
+    def test_weekend_ranking_reserves_output_for_top_ten(self):
         source = MODULE_PATH.read_text(encoding="utf-8")
         self.assertIn("max_tokens=7000", source)
 
-    def test_large_candidate_set_uses_batched_finalists(self):
+    def test_large_candidate_set_uses_one_global_top_ten_call(self):
         candidates = [
             {"event_id": f"event-{index}", "name": f"Event {index}"}
             for index in range(26)
         ]
         calls = []
 
-        def fake_rank(_model, batch, _memory, stage):
-            calls.append((stage, len(batch)))
+        def fake_rank(_model, batch, _memory, attempt):
+            calls.append((attempt, len(batch)))
             ranked = []
-            for score, event in enumerate(reversed(batch), start=1):
+            for score, event in enumerate(reversed(batch[-10:]), start=1):
                 ranked_event = dict(event)
                 ranked_event["priority_score"] = 100 - score
                 ranked_event["ai_ranking"] = {"score": 100 - score}
                 ranked.append(ranked_event)
             return ranked, {
-                "stage": stage,
+                "stage": "global-top-10",
+                "attempt": attempt,
                 "candidate_count": len(batch),
                 "token_usage": {"total_tokens": len(batch)},
             }
 
         with patch.object(MODULE, "get_openai_api_key", return_value="test"), patch(
             "langchain_openai.ChatOpenAI"
-        ), patch.object(MODULE, "invoke_ranking_batch", side_effect=fake_rank):
+        ), patch.object(
+            MODULE, "estimate_ranking_input_tokens", return_value=8000
+        ), patch.object(MODULE, "invoke_ranking_attempt", side_effect=fake_rank):
             ranked, metadata = MODULE.ai_rank_weekend_events(candidates, {})
 
-        self.assertEqual(calls, [("batch-1", 15), ("batch-2", 11), ("final", 10)])
-        self.assertEqual(len(ranked), 26)
-        self.assertEqual(len({event["event_id"] for event in ranked}), 26)
-        self.assertEqual(metadata["strategy"], "batched-finalists")
-        self.assertEqual(metadata["openai_call_count"], 3)
-        self.assertEqual(metadata["token_usage"]["total_tokens"], 36)
+        self.assertEqual(calls, [(1, 26)])
+        self.assertEqual(len(ranked), 10)
+        self.assertEqual(len({event["event_id"] for event in ranked}), 10)
+        self.assertEqual(metadata["strategy"], "single-global-top-10")
+        self.assertEqual(metadata["openai_call_count"], 1)
+        self.assertEqual(metadata["estimated_input_token_upper_bound"], 8000)
+        self.assertEqual(metadata["token_usage"]["total_tokens"], 26)
 
     def test_legacy_model_keeps_temperature(self):
         original_model = MODULE.OPENAI_MODEL
@@ -419,6 +427,56 @@ class LangChainReportTests(unittest.TestCase):
         events = MODULE.parse_ai_rankings(response, candidates)
         self.assertEqual(events[0]["event_id"], "revere")
         self.assertEqual(events[0]["ai_ranking"]["dimensions"]["rarity"], 19)
+
+    def test_ai_parser_accepts_only_top_ten_from_full_candidate_pool(self):
+        candidates = [
+            {"event_id": f"event-{index}", "name": f"Event {index}"}
+            for index in range(26)
+        ]
+        rankings = []
+        for index in range(10):
+            rankings.append(
+                {
+                    "event_id": f"event-{index}",
+                    "score": 60,
+                    "dimensions": {
+                        "leisure_appeal": 15,
+                        "local_significance": 15,
+                        "rarity": 10,
+                        "value": 5,
+                        "proximity_fit": 5,
+                        "information_confidence": 10,
+                    },
+                    "destination_worthy": False,
+                    "significance_signals": [],
+                    "reason_zh": "入選前十。",
+                    "reason_en": "Selected for the top ten.",
+                }
+            )
+
+        parsed = MODULE.parse_ai_rankings(
+            __import__("json").dumps({"rankings": rankings}), candidates
+        )
+        self.assertEqual(len(parsed), 10)
+        self.assertEqual({item["event_id"] for item in parsed}, {
+            f"event-{index}" for index in range(10)
+        })
+
+        with self.assertRaisesRegex(ValueError, "exactly 10 events"):
+            MODULE.parse_ai_rankings(
+                __import__("json").dumps({"rankings": rankings[:9]}), candidates
+            )
+
+    def test_global_ranking_rejects_input_above_safety_budget_before_api_call(self):
+        candidates = [{"event_id": "event-1", "name": "Event"}]
+        with patch.object(
+            MODULE,
+            "estimate_ranking_input_tokens",
+            return_value=MODULE.RANKING_INPUT_TOKEN_BUDGET + 1,
+        ), patch.object(MODULE, "get_openai_api_key") as api_key:
+            with self.assertRaisesRegex(ValueError, "safety budget"):
+                MODULE.ai_rank_weekend_events(candidates, {})
+        api_key.assert_not_called()
 
     def test_normalizes_accidental_json_suffix(self):
         self.assertEqual(
