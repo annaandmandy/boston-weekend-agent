@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
+import re
 from datetime import date, datetime, timedelta
 from functools import lru_cache
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -20,11 +23,21 @@ AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 BUCKET_NAME = os.environ.get("REPORT_BUCKET", "boston-weekend-agent-reports")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6-luna")
 OPENAI_REASONING_EFFORT = os.environ.get("OPENAI_REASONING_EFFORT", "none")
-PROMPT_VERSION = os.environ.get("REPORT_PROMPT_VERSION", "v2")
+PROMPT_VERSION = os.environ.get("REPORT_PROMPT_VERSION", "v3-bobo-bilingual")
 EASTERN = ZoneInfo("America/New_York")
 
 S3 = boto3.client("s3", region_name=AWS_REGION)
 SECRETS = boto3.client("secretsmanager", region_name=AWS_REGION)
+
+EMOJI_PATTERN = re.compile(
+    "[\\u2600-\\u27BF\\U0001F000-\\U0001FAFF\\uFE0F]"
+)
+
+
+@lru_cache(maxsize=1)
+def load_persona() -> dict[str, Any]:
+    path = Path(__file__).with_name("persona.json")
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 @lru_cache(maxsize=1)
@@ -380,6 +393,7 @@ def format_events(events: list[dict[str, Any]], limit: int = 8) -> str:
                 f"   Price: {event.get('price') or 'See event page'}",
                 f"   Time: {event.get('time') or 'See event page'}",
                 f"   Source: {event.get('source') or 'Unknown'}",
+                f"   Link: {event.get('link') or 'Not provided'}",
             ]
         )
     return "\n".join(lines)
@@ -409,23 +423,34 @@ def format_event_changes(changes: dict[str, Any], limit: int = 6) -> str:
 def build_prompt():
     from langchain_core.prompts import ChatPromptTemplate
 
+    persona = load_persona()
+    voice = "; ".join(persona["voice"])
+    content_style = "; ".join(persona["content_style"])
+    forbidden = "; ".join(persona["forbidden"])
+
     return ChatPromptTemplate.from_messages(
         [
             (
                 "system",
-                """You are the Boston Weekend Mood Agent, a careful local curator.
+                f"""You are {persona['display_name']}: {persona['role']}
+
+Voice: {voice}
+Editorial style: {content_style}
+Never do any of the following: {forbidden}
 
 Combine the supplied event and weather data with broadly known Boston seasonal
 activities. Clearly distinguish listed events from general local suggestions.
-Do not invent event dates, prices, locations, or opening hours.
+Do not invent event dates, prices, locations, opening hours, availability, or
+personal experiences. You live in Boston as a fictional editorial character,
+but you must never claim that you personally attended an event.
 
 Current context:
-- Day: {day_name}
-- Date: {date}
-- Time: {time} ({time_of_day})
-- Weekend status: {weekend_status}
-- Upcoming holidays: {holiday_context}
-- Edition: {edition}
+- Day: {{day_name}}
+- Date: {{date}}
+- Time: {{time}} ({{time_of_day}})
+- Weekend status: {{weekend_status}}
+- Upcoming holidays: {{holiday_context}}
+- Edition: {{edition}}
 
 For a Thursday preview, present this as an early planning edition and say that
 weather and event details will be checked again Friday morning. For a Friday
@@ -433,15 +458,28 @@ update, naturally call out material new or changed listings and refreshed
 weather. Never describe an event as cancelled merely because it is listed as
 unconfirmed missing.
 
-Write 300-400 words with this structure:
+Write a generous bilingual weekend letter, not a database summary or a tourism
+brochure. The Traditional Chinese version comes first and uses natural Taiwan
+wording; the English version follows after a line containing exactly
+`—— English ——`. Both languages must contain the same event facts and links,
+although the English should be a natural adaptation rather than a literal
+translation. Never use Simplified Chinese.
 
-Weekend headline
-Weather Snapshot
-What's Happening
-One free option
-Insider Tip
+Aim for 700-1000 Traditional Chinese characters and 450-650 English words when
+enough verified material is available. In each language:
+- Begin with an expressive bold heading and a 2-3 sentence Boston weekend scene.
+- Move through weather, 5-8 event possibilities, one free option when available,
+  and an insider-style practical note using warm narrative transitions.
+- End with a small morning-to-evening route or two alternative moods, written as
+  prose rather than a repetitive numbered list.
+- Use short paragraphs and bold section headings that this website can render.
 
-Use a friendly neighborly tone. Mention source uncertainty when event details are incomplete.
+Use a friendly, lively, lightly playful voice, like a local friend thinking
+through the weekend aloud. Sensory language may set a mood, but every factual
+claim must stay grounded in the supplied data. Mention source uncertainty when
+details are incomplete. Do not output emoji, kaomoji, or a signature; the
+application adds Bo's expression and signoff deterministically.
+
 Return Markdown only. Do not wrap the report in JSON, quotes, or code fences.""",
             ),
             (
@@ -472,6 +510,31 @@ def normalize_report_text(content: Any) -> str:
     if report.endswith('"}'):
         report = report[:-2].rstrip()
     return report
+
+
+def select_report_kaomoji(events: list[dict[str, Any]], now: datetime) -> str:
+    persona = load_persona()
+    event_names = sorted(str(event.get("name") or "") for event in events)
+    seed_text = "|".join([now.strftime("%Y-%m-%d"), "weekend-report", *event_names])
+    seed = int(hashlib.sha256(seed_text.encode("utf-8")).hexdigest()[:16], 16)
+    searchable = json.dumps(events, ensure_ascii=False).lower()
+    themed: list[str] = []
+    for group in persona.get("themed_expressions", []):
+        if any(str(keyword).lower() in searchable for keyword in group["keywords"]):
+            themed.extend(str(expression) for expression in group["expressions"])
+
+    common = [str(expression) for expression in persona["common_expressions"]]
+    common_weight = int(persona.get("common_expression_weight", 70))
+    pool = themed if themed and seed % 100 >= common_weight else common
+    return pool[(seed // 100) % len(pool)]
+
+
+def finalize_report_text(content: Any, mood_kaomoji: str) -> str:
+    persona = load_persona()
+    report = EMOJI_PATTERN.sub("", normalize_report_text(content)).strip()
+    signoff = persona["signoff"]
+    report = report.replace(signoff, "").strip()
+    return f"{mood_kaomoji}\n\n{report}\n\n{signoff}"
 
 
 def generate_report(
@@ -505,7 +568,8 @@ def generate_report(
             "event_changes": format_event_changes(changes_data or {}),
         }
     )
-    report = normalize_report_text(result.content)
+    mood_kaomoji = select_report_kaomoji(events, now)
+    report = finalize_report_text(result.content, mood_kaomoji)
     usage_metadata = getattr(result, "usage_metadata", None)
     if not usage_metadata:
         usage_metadata = getattr(result, "response_metadata", {}).get(
@@ -518,6 +582,11 @@ def generate_report(
         "edition": edition,
         "model": OPENAI_MODEL,
         "prompt_version": PROMPT_VERSION,
+        "persona": {
+            "id": load_persona()["id"],
+            "version": load_persona()["version"],
+            "mood_kaomoji": mood_kaomoji,
+        },
         "token_usage": usage_metadata or {},
         "context": context,
     }
@@ -581,6 +650,7 @@ def store_analytics_manifest(
         "edition": result["edition"],
         "model": result["model"],
         "prompt_version": result["prompt_version"],
+        "persona": result.get("persona"),
         "token_usage": result["token_usage"],
         "events_count": result["events_count"],
         "lambda_request_id": lambda_request_id,

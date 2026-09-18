@@ -235,6 +235,9 @@ class DailySocialTests(unittest.TestCase):
         self.assertIn("Traditional Chinese", prompt_text)
         self.assertIn("Never use Simplified Chinese", prompt_text)
         self.assertIn("instead of a numbered or repetitive list", prompt_text)
+        self.assertIn("conversational tiny story", prompt_text)
+        self.assertIn("350-500 Traditional Chinese characters", prompt_text)
+        self.assertIn("220-300 English words", prompt_text)
         self.assertIn("Do not place emoji", prompt_text)
 
     def test_rejects_model_generated_emoji(self):

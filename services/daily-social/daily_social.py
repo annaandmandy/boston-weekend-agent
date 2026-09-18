@@ -324,10 +324,16 @@ invent dates, times, prices, venues, availability, or cancellation status.
 Write the Traditional Chinese version first, using natural Taiwan-style wording,
 and a natural English version second. Never use Simplified Chinese characters or
 Mainland-China-specific wording. Both versions must describe the same selected
-activities and must not introduce facts that appear in only one language. Keep
-each body concise, friendly, and useful to people living around Greater Boston.
-Mention 3-5 activities when available, preserve their source links, and end each
-body with the weekend-report URL. Use plain text and raw URLs; do not use Markdown
+activities and must not introduce facts that appear in only one language. Write
+each version as a conversational tiny story from a Boston friend: open with a
+small everyday scene, mood, or question, use 3-5 short paragraphs, and weave the
+activities into possible ways the day could unfold. Avoid a compressed summary
+or a repetitive numbered list. Aim for 350-500 Traditional Chinese characters
+and 220-300 English words when enough verified activities are available.
+
+Mention 3-5 activities when available, explain why each fits the day's story,
+preserve their source links, and end each body with the weekend-report URL. Use
+plain text and raw URLs; do not use Markdown
 link syntax because the same copy is published directly to both platforms. Do not
 claim that an event is recommended from personal experience. Do not place emoji
 or kaomoji in the generated fields; the application adds Bo's chosen expressions.

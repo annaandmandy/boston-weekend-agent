@@ -20,6 +20,36 @@ SPEC.loader.exec_module(MODULE)
 
 
 class LangChainReportTests(unittest.TestCase):
+    def test_weekend_prompt_is_bilingual_bobo_letter(self):
+        prompt_text = str(MODULE.build_prompt())
+        self.assertIn("波波 Bo", prompt_text)
+        self.assertIn("Traditional Chinese version comes first", prompt_text)
+        self.assertIn("700-1000 Traditional Chinese characters", prompt_text)
+        self.assertIn("450-650 English words", prompt_text)
+        self.assertIn("weekend letter", prompt_text)
+        self.assertIn("repetitive numbered list", prompt_text)
+
+    def test_daily_and_weekend_persona_files_match(self):
+        daily_persona_path = (
+            pathlib.Path(__file__).parents[1]
+            / "services"
+            / "daily-social"
+            / "persona.json"
+        )
+        self.assertEqual(
+            __import__("json").loads(daily_persona_path.read_text()),
+            MODULE.load_persona(),
+        )
+
+    def test_report_finalizer_removes_emoji_and_adds_bobo_identity(self):
+        rendered = MODULE.finalize_report_text(
+            "**週末來信** ☀️\n\n先去散步。",
+            "⌖ˎˊ˗ 〔✦ᴗ✦〕ノ",
+        )
+        self.assertNotIn("☀️", rendered)
+        self.assertTrue(rendered.startswith("⌖ˎˊ˗ 〔✦ᴗ✦〕ノ"))
+        self.assertTrue(rendered.endswith("— 波波 ⌖ˎˊ˗ 〔•ᴗ•〕ゞ"))
+
     def test_luna_uses_reasoning_effort_without_temperature(self):
         original_model = MODULE.OPENAI_MODEL
         original_effort = MODULE.OPENAI_REASONING_EFFORT
