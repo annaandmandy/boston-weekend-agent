@@ -233,7 +233,7 @@ class LangChainReportTests(unittest.TestCase):
                         },
                         "destination_worthy": True,
                         "significance_signals": ["annual"],
-                        "reason_zh": "值得专程前往。",
+                        "reason_zh": "值得專程前往。",
                         "reason_en": "Worth the trip.",
                     },
                     {
