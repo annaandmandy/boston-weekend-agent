@@ -170,7 +170,8 @@ without printing it.
 
 After the Lambda image and IAM policy are updated, keep
 `THREADS_PUBLISH_ENABLED=false` for one direct invocation and inspect
-`social/latest.txt`. When the copy is acceptable, change the flag to `true` and
+`social/latest.txt`. Confirm that the Chinese section uses Traditional Chinese.
+When the copy is acceptable, change the flag to `true` and
 invoke once. A successful run creates
 `social/publications/threads/YYYY-MM-DD.json` with status `published` and the
 Threads post IDs.

@@ -235,9 +235,9 @@ def format_events(events: list[dict[str, Any]]) -> str:
                 (
                     f"{index}. {labels.get(event['day_offset'], event.get('date'))}",
                     str(event.get("name") or "Unknown"),
-                    str(event.get("time") or "时间见活动页面"),
+                    str(event.get("time") or "時間見活動頁面"),
                     str(event.get("location") or event.get("city") or "Greater Boston"),
-                    str(event.get("price") or "价格见活动页面"),
+                    str(event.get("price") or "價格見活動頁面"),
                     str(event.get("link") or ""),
                 )
             )
@@ -256,14 +256,15 @@ def build_prompt():
 unchanged on both Threads and Xiaohongshu. Use only facts supplied below. Never
 invent dates, times, prices, venues, availability, or cancellation status.
 
-Write the Chinese version first and a natural English version second. Both
-versions must describe the same selected activities and must not introduce facts
-that appear in only one language. Keep each body concise, friendly, and useful
-to people living around Greater Boston. Mention 3-5 activities when available,
-preserve their source links, and end each body with the weekend-report URL. Use
-plain text and raw URLs; do not use Markdown link syntax because the same copy is
-published directly to both platforms. Do not claim that an event is recommended
-from personal experience.
+Write the Traditional Chinese version first, using natural Taiwan-style wording,
+and a natural English version second. Never use Simplified Chinese characters or
+Mainland-China-specific wording. Both versions must describe the same selected
+activities and must not introduce facts that appear in only one language. Keep
+each body concise, friendly, and useful to people living around Greater Boston.
+Mention 3-5 activities when available, preserve their source links, and end each
+body with the weekend-report URL. Use plain text and raw URLs; do not use Markdown
+link syntax because the same copy is published directly to both platforms. Do not
+claim that an event is recommended from personal experience.
 
 Return strict JSON with exactly these top-level keys: zh, en, hashtags. `zh` and
 `en` must each contain exactly `title` and `body` strings. `hashtags` must be an

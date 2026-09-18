@@ -127,7 +127,7 @@ tests each Lambda independently before changing the production state machine.
   event, social, and analytics history remain private.
 - Events are collected daily for a ten-day window. The full weekend workflow
   runs Thursday for an early planning edition and Friday for a refreshed edition.
-- One bilingual social post (Chinese first, English second) is generated daily
+- One bilingual social post (Traditional Chinese first, English second) is generated daily
   and reused unchanged for Threads and Xiaohongshu, with a 48-hour event
   cooldown.
 - The report Lambda reads source data directly from S3, keeping Step Functions

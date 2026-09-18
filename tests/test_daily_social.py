@@ -97,6 +97,11 @@ class DailySocialTests(unittest.TestCase):
         self.assertEqual(content["en"]["body"], "English copy")
         self.assertEqual(content["hashtags"], ["Boston", "周末去哪"])
 
+    def test_prompt_requires_traditional_chinese(self):
+        prompt_text = str(MODULE.build_prompt())
+        self.assertIn("Traditional Chinese", prompt_text)
+        self.assertIn("Never use Simplified Chinese", prompt_text)
+
     def test_campaign_archive_key_is_immutable_for_retries(self):
         original_s3 = MODULE.S3
         MODULE.S3 = MagicMock()
