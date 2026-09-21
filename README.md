@@ -3,7 +3,8 @@
 A serverless AWS workflow that collects upcoming Boston events, combines them
 with weather context, and generates a concise weekend guide with an LLM.
 
-## Meet Bo / 認識波波
+## Meet Bo / 認識波波 
+Threads([`@bostonweekendagent`](https://www.threads.com/@bostonweekendagent))
 
 波波（Bo）是一台住在 Boston 雲端地圖裡的黃色探路機器人，也是這個專案的
 production editorial agent。波波不是替活動做關鍵字排序的吉祥物：它會讀取經過
