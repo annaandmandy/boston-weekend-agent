@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import pathlib
 import sys
 import unittest
@@ -122,6 +123,79 @@ class CollectEventsTests(unittest.TestCase):
         self.assertEqual(event["time"], "6:00pm")
         self.assertEqual(event["location"], "Boston Common")
         self.assertEqual(event["price"], "Free")
+
+    def test_parse_meet_boston_rss(self):
+        rss = """<?xml version="1.0"?>
+        <rss version="2.0"><channel><item>
+          <title>Harbor Arts Festival</title>
+          <link>https://www.meetboston.com/event/harbor-arts-festival/12345/</link>
+          <category>Festivals</category>
+          <category>Free</category>
+          <pubDate>Sat, 19 Sep 2026 00:00:00 -0400</pubDate>
+          <description><![CDATA[
+            <img src="https://assets.example.org/harbor.jpg" />
+            <p>A free annual waterfront celebration with art and music.</p>
+          ]]></description>
+        </item></channel></rss>"""
+        events = MODULE.parse_meet_boston_rss(
+            rss, today=date(2026, 9, 17)
+        )
+        self.assertEqual(len(events), 1)
+        event = events[0]
+        self.assertEqual(event["name"], "Harbor Arts Festival")
+        self.assertEqual(event["date"], "2026-09-19")
+        self.assertEqual(event["category"], "Festivals, Free")
+        self.assertEqual(event["price"], "Free")
+        self.assertEqual(event["source"], "Meet Boston")
+        self.assertEqual(
+            event["image_url"], "https://assets.example.org/harbor.jpg"
+        )
+
+    def test_parse_meet_boston_detail_json_ld(self):
+        html = """
+        <html><head><script type="application/ld+json">
+        {
+          "@context": "https://schema.org",
+          "@type": "Event",
+          "name": "Harbor Arts Festival",
+          "startDate": "2026-09-19T18:30:00-04:00",
+          "description": "An annual waterfront celebration.",
+          "image": ["https://assets.example.org/detail.jpg"],
+          "isAccessibleForFree": true,
+          "location": {
+            "@type": "Place",
+            "name": "Harbor Park",
+            "address": {
+              "streetAddress": "1 Harbor Way",
+              "addressLocality": "Boston",
+              "addressRegion": "MA"
+            },
+            "geo": {
+              "latitude": 42.36,
+              "longitude": -71.05
+            }
+          }
+        }
+        </script></head></html>
+        """
+        detail = MODULE.parse_meet_boston_detail(html)
+        self.assertEqual(detail["time"], "18:30:00")
+        self.assertEqual(detail["location"], "Harbor Park")
+        self.assertEqual(detail["address"], "1 Harbor Way, Boston, MA")
+        self.assertEqual(detail["city"], "Boston")
+        self.assertEqual(detail["price"], "Free")
+        self.assertEqual(detail["latitude"], 42.36)
+
+    def test_meet_boston_query_is_bounded_to_collection_window(self):
+        params = MODULE.build_meet_boston_rss_params(today=date(2026, 9, 17))
+        event_filter = json.loads(params["filter"])
+        date_filter = event_filter["dates"]["$elemMatch"]["eventDate"]
+        self.assertEqual(
+            date_filter["$gte"]["$date"], "2026-09-17T04:00:00.000Z"
+        )
+        self.assertEqual(
+            date_filter["$lte"]["$date"], "2026-09-28T03:59:59.999Z"
+        )
 
     def test_ticketmaster_geohash_has_expected_precision(self):
         geohash = MODULE.encode_geohash(42.3601, -71.0589)

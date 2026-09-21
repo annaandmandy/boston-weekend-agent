@@ -44,6 +44,7 @@ AWS Step Functions
         |
         +--> Event collector Lambda
         |      +-- Ticketmaster Greater Boston radius search
+        |      +-- Meet Boston public RSS + bounded JSON-LD enrichment
         |      +-- City of Boston events RSS
         |      +-- Official municipal iCalendar feeds
         |      +-- Revere and Discover Quincy calendars
