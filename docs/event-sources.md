@@ -17,6 +17,7 @@ the entire event source.
 | Source | Coverage | Adapter |
 | --- | --- | --- |
 | Ticketmaster Discovery API | Venues within 25 miles of Boston | JSON API using `geoPoint` and `radius` |
+| Meet Boston | Official regional visitor calendar and featured events | Public RSS plus limited JSON-LD detail enrichment |
 | Boston.gov | Boston public events | Official RSS |
 | Cambridge Arts | Cambridge arts events | Official iCalendar |
 | Malden Main Calendar | Malden community events | Official CivicPlus iCalendar |
@@ -29,6 +30,13 @@ All sources are isolated: one provider failure is recorded in the snapshot and
 does not prevent other providers from producing a report. Events are normalized,
 government meetings are excluded, and duplicate title/date pairs retain the
 record with the most useful details.
+
+Meet Boston is collected through the RSS endpoint advertised by its event
+calendar. Each run makes one bounded RSS request, then enriches at most 12 event
+detail pages from their standard `Event` JSON-LD. Detail requests use an
+identifiable project user agent and respect the site's two-second crawl delay.
+If a detail page is unavailable, the RSS record is retained rather than failing
+the entire source.
 
 ## Confirmed candidates
 

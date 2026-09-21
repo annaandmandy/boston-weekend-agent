@@ -11,6 +11,7 @@ import re
 import time
 import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from functools import lru_cache
 from typing import Any, Callable
 from urllib.parse import urljoin, urlparse
@@ -29,6 +30,11 @@ BUCKET_NAME = os.environ.get("REPORT_BUCKET", "boston-weekend-agent-reports")
 DAYS_AHEAD = int(os.environ.get("DAYS_AHEAD", "10"))
 MAX_EVENTS_PER_SOURCE = int(os.environ.get("MAX_EVENTS_PER_SOURCE", "10"))
 MAX_CITY_EVENTS = int(os.environ.get("MAX_CITY_EVENTS", "30"))
+MAX_MEET_BOSTON_EVENTS = int(os.environ.get("MAX_MEET_BOSTON_EVENTS", "30"))
+MEET_BOSTON_DETAIL_LIMIT = int(os.environ.get("MEET_BOSTON_DETAIL_LIMIT", "12"))
+MEET_BOSTON_CRAWL_DELAY_SECONDS = float(
+    os.environ.get("MEET_BOSTON_CRAWL_DELAY_SECONDS", "2")
+)
 TICKETMASTER_RADIUS_MILES = int(os.environ.get("TICKETMASTER_RADIUS_MILES", "25"))
 REQUEST_TIMEOUT_SECONDS = int(os.environ.get("REQUEST_TIMEOUT_SECONDS", "15"))
 MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "3"))
@@ -46,6 +52,19 @@ HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36"
     ),
     "Accept-Language": "en-US,en;q=0.9",
+}
+
+MEET_BOSTON_HEADERS = {
+    "User-Agent": (
+        "BostonWeekendAgent/1.0 "
+        "(+https://www.hsiangyuhuang.com/weekend_report)"
+    ),
+    "Accept": (
+        "application/rss+xml, application/xml;q=0.9, "
+        "text/html;q=0.8, */*;q=0.5"
+    ),
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.meetboston.com/events/",
 }
 
 BOSTON_LATITUDE = 42.3601
@@ -971,6 +990,281 @@ def fetch_boston_gov_events() -> list[dict[str, Any]]:
     return events
 
 
+def _meet_boston_query_window(today: date | None = None) -> tuple[datetime, datetime]:
+    reference = today or _now().date()
+    start = datetime.combine(reference, datetime.min.time(), tzinfo=EASTERN)
+    end = datetime.combine(
+        reference + timedelta(days=DAYS_AHEAD + 1),
+        datetime.min.time(),
+        tzinfo=EASTERN,
+    ) - timedelta(milliseconds=1)
+    return start.astimezone(timezone.utc), end.astimezone(timezone.utc)
+
+
+def build_meet_boston_rss_params(today: date | None = None) -> dict[str, str]:
+    """Build the public RSS query exposed by Meet Boston's event calendar."""
+    start, end = _meet_boston_query_window(today)
+    event_filter = {
+        "active": True,
+        "$and": [
+            {"categories.catId": {"$nin": ["105"]}},
+            {"eventTypeId": {"$nin": [1062]}},
+        ],
+        "dates": {
+            "$elemMatch": {
+                "eventDate": {
+                    "$gte": {
+                        "$date": start.isoformat(timespec="milliseconds").replace(
+                            "+00:00", "Z"
+                        )
+                    },
+                    "$lte": {
+                        "$date": end.isoformat(timespec="milliseconds").replace(
+                            "+00:00", "Z"
+                        )
+                    },
+                }
+            }
+        },
+        "sites": {"$in": ["primary"]},
+    }
+    options = {
+        "limit": MAX_MEET_BOSTON_EVENTS,
+        "fields": {
+            "recId": 1,
+            "title": 1,
+            "startDate": 1,
+            "endDate": 1,
+            "nextDate": 1,
+            "description": 1,
+            "categories": 1,
+            "sites": 1,
+            "primary_site": 1,
+            "media_raw": 1,
+            "detail_type": 1,
+        },
+        "sort": {"nextDate": 1, "rank": 1, "title_sort": 1},
+    }
+    return {
+        "filter": json.dumps(event_filter, separators=(",", ":")),
+        "options": json.dumps(options, separators=(",", ":")),
+    }
+
+
+def parse_meet_boston_rss(
+    xml_text: str, *, today: date | None = None
+) -> list[dict[str, Any]]:
+    """Normalize Meet Boston's advertised RSS feed without scraping its list UI."""
+    root = ET.fromstring(xml_text)
+    events: list[dict[str, Any]] = []
+    for item in root.findall("./channel/item"):
+        title = clean_text(item.findtext("title"))
+        link = clean_text(item.findtext("link"))
+        description_html = item.findtext("description") or ""
+        soup = BeautifulSoup(description_html, "html.parser")
+        description_node = soup.find("p")
+        description = clean_text(
+            description_node.get_text(" ", strip=True)
+            if description_node
+            else soup.get_text(" ", strip=True)
+        )
+        image_node = soup.find("img", src=True)
+
+        event_date = None
+        published = clean_text(item.findtext("pubDate"))
+        if published:
+            try:
+                event_date = (
+                    parsedate_to_datetime(published)
+                    .astimezone(EASTERN)
+                    .date()
+                    .isoformat()
+                )
+            except (TypeError, ValueError):
+                LOGGER.warning("Meet Boston returned an invalid pubDate for %s", title)
+        if not event_date:
+            date_match = re.search(r"\b(\d{2}/\d{2}/\d{4})\b", description_html)
+            if date_match:
+                event_date = (
+                    datetime.strptime(date_match.group(1), "%m/%d/%Y")
+                    .date()
+                    .isoformat()
+                )
+
+        if (
+            not title
+            or not link
+            or not is_in_collection_window(event_date, today=today)
+            or NON_LEISURE_PATTERN.search(title)
+        ):
+            continue
+
+        categories = [
+            clean_text(category.text)
+            for category in item.findall("category")
+            if clean_text(category.text)
+        ]
+        events.append(
+            {
+                "name": title,
+                "date": event_date,
+                "time": None,
+                "location": "Boston, MA",
+                "address": None,
+                "city": "Boston",
+                "category": ", ".join(categories) or "Event",
+                "price": "Free"
+                if re.search(r"\bfree\b", description or "", re.IGNORECASE)
+                else None,
+                "description": description,
+                "image_url": image_node.get("src") if image_node else None,
+                "source": "Meet Boston",
+                "link": link,
+            }
+        )
+    return events[:MAX_MEET_BOSTON_EVENTS]
+
+
+def _schema_event(payload: Any) -> dict[str, Any] | None:
+    if isinstance(payload, dict):
+        event_type = payload.get("@type")
+        if event_type == "Event" or (
+            isinstance(event_type, list) and "Event" in event_type
+        ):
+            return payload
+        for value in payload.values():
+            found = _schema_event(value)
+            if found:
+                return found
+    elif isinstance(payload, list):
+        for value in payload:
+            found = _schema_event(value)
+            if found:
+                return found
+    return None
+
+
+def parse_meet_boston_detail(html: str) -> dict[str, Any]:
+    """Read standard Event JSON-LD from a Meet Boston detail page."""
+    soup = BeautifulSoup(html, "html.parser")
+    schema = None
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        try:
+            schema = _schema_event(json.loads(script.string or script.get_text()))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if schema:
+            break
+    if not schema:
+        return {}
+
+    location = (
+        schema.get("location") if isinstance(schema.get("location"), dict) else {}
+    )
+    address_data = (
+        location.get("address") if isinstance(location.get("address"), dict) else {}
+    )
+    geo = location.get("geo") if isinstance(location.get("geo"), dict) else {}
+    city = clean_text(address_data.get("addressLocality"))
+    address = clean_text(
+        ", ".join(
+            str(value)
+            for value in (
+                address_data.get("streetAddress"),
+                city,
+                address_data.get("addressRegion"),
+            )
+            if value
+        )
+    )
+
+    event_time = None
+    start_value = clean_text(schema.get("startDate"))
+    if start_value and "T" in start_value:
+        try:
+            parsed_start = datetime.fromisoformat(start_value.replace("Z", "+00:00"))
+            if parsed_start.tzinfo:
+                parsed_start = parsed_start.astimezone(EASTERN)
+            event_time = parsed_start.strftime("%H:%M:%S")
+        except ValueError:
+            pass
+
+    price = "Free" if schema.get("isAccessibleForFree") is True else None
+    offers = schema.get("offers")
+    if isinstance(offers, dict):
+        offers = [offers]
+    offer_prices = []
+    for offer in offers or []:
+        if isinstance(offer, dict) and offer.get("price") not in {None, ""}:
+            offer_prices.append(str(offer["price"]))
+    if offer_prices:
+        first_offer = (offers or [{}])[0]
+        currency = (
+            str(first_offer.get("priceCurrency") or "USD")
+            if isinstance(first_offer, dict)
+            else "USD"
+        )
+        prefix = "$" if currency.upper() == "USD" else f"{currency} "
+        price = prefix + "-".join(dict.fromkeys(offer_prices))
+
+    image = schema.get("image")
+    if isinstance(image, list):
+        image = image[0] if image else None
+    return {
+        "time": event_time,
+        "location": clean_text(location.get("name")),
+        "address": address,
+        "city": city,
+        "latitude": geo.get("latitude"),
+        "longitude": geo.get("longitude"),
+        "price": price,
+        "description": clean_text(schema.get("description")),
+        "image_url": clean_text(image),
+    }
+
+
+def fetch_meet_boston_events() -> list[dict[str, Any]]:
+    LOGGER.info("Fetching Meet Boston events")
+    response = request_with_retry(
+        lambda: requests.get(
+            "https://www.meetboston.com/event/rss/",
+            params=build_meet_boston_rss_params(),
+            headers=MEET_BOSTON_HEADERS,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+        ),
+        source="Meet Boston",
+    )
+    events = parse_meet_boston_rss(response.text)
+    detail_limit = min(MEET_BOSTON_DETAIL_LIMIT, len(events))
+    for event in events[:detail_limit]:
+        time.sleep(MEET_BOSTON_CRAWL_DELAY_SECONDS)
+        try:
+            detail_response = request_with_retry(
+                lambda event=event: requests.get(
+                    event["link"],
+                    headers=MEET_BOSTON_HEADERS,
+                    timeout=REQUEST_TIMEOUT_SECONDS,
+                ),
+                source="Meet Boston detail",
+            )
+            detail = parse_meet_boston_detail(detail_response.text)
+            for field, value in detail.items():
+                if value not in {None, ""}:
+                    event[field] = value
+        except Exception as error:
+            LOGGER.warning(
+                "Meet Boston detail enrichment failed for %s: %s",
+                event.get("link"),
+                type(error).__name__,
+            )
+    LOGGER.info(
+        "Meet Boston returned %s events; enriched up to %s details",
+        len(events),
+        detail_limit,
+    )
+    return events
+
+
 def deduplicate_and_rank(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     unique: dict[tuple[str, str], dict[str, Any]] = {}
     for event in events:
@@ -1076,6 +1370,7 @@ def build_change_set(
 def collect_events() -> dict[str, Any]:
     sources: list[tuple[str, Callable[[], list[dict[str, Any]]]]] = [
         ("Ticketmaster", fetch_ticketmaster_events),
+        ("Meet Boston", fetch_meet_boston_events),
         ("Boston.gov", fetch_boston_gov_events),
         ("Revere Community", fetch_revere_events),
         ("Discover Quincy", fetch_quincy_events),
