@@ -5,6 +5,7 @@ with weather context, and generates a concise weekend guide with an LLM.
 
 ## Meet Bo / 認識波波 
 Threads([`@bostonweekendagent`](https://www.threads.com/@bostonweekendagent))
+
 Weekend Report: https://www.hsiangyuhuang.com/weekend_report
 
 波波（Bo）是一台住在 Boston 雲端地圖裡的黃色探路機器人，也是這個專案的
