@@ -10,7 +10,7 @@
       "Condition": {
         "StringEquals": {
           "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-          "token.actions.githubusercontent.com:sub": "repo:annaandmandy/boston-weekend-agent:ref:refs/heads/main"
+          "token.actions.githubusercontent.com:sub": "repo:annaandmandy@67213334/boston-weekend-agent@1375069249:ref:refs/heads/main"
         }
       }
     }
