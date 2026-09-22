@@ -559,7 +559,7 @@ class DailySocialTests(unittest.TestCase):
         self.assertIn("中文活動", chunks[0])
         self.assertIn("English event", chunks[-1])
 
-    def test_publishes_followup_chunks_as_replies(self):
+    def test_publishes_followup_chunks_as_direct_replies_to_root(self):
         credentials = {
             "THREADS_USER_ID": "user-1",
             "THREADS_ACCESS_TOKEN": "secret-token",
@@ -567,21 +567,34 @@ class DailySocialTests(unittest.TestCase):
         with patch.object(
             MODULE,
             "split_threads_text",
-            return_value=["first", "second"],
+            return_value=["first", "second", "third"],
         ), patch.object(
             MODULE,
             "create_threads_container_with_retry",
-            side_effect=["container-1", "container-2"],
+            side_effect=["container-1", "container-2", "container-3"],
         ) as create, patch.object(
             MODULE,
             "publish_threads_container",
-            side_effect=["post-1", "post-2"],
+            side_effect=["post-1", "post-2", "post-3"],
         ):
             post_ids = MODULE.publish_threads_text("copy", credentials)
 
-        self.assertEqual(post_ids, ["post-1", "post-2"])
+        self.assertEqual(post_ids, ["post-1", "post-2", "post-3"])
         self.assertEqual(create.call_args_list[0].args[-1], None)
         self.assertEqual(create.call_args_list[1].args[-1], "post-1")
+        self.assertEqual(create.call_args_list[2].args[-1], "post-1")
+
+    def test_splitter_does_not_leave_english_heading_in_a_short_chunk(self):
+        chinese = "中文內容" * 90
+        heading = "更多活動：https://example.com\n\n—— English ——\n\nTitle"
+        english = "English event details " * 30
+        chunks = MODULE.split_threads_text(
+            f"{chinese}\n\n{heading}\n\n{english}"
+        )
+
+        heading_chunk = next(chunk for chunk in chunks if "—— English ——" in chunk)
+        self.assertGreater(len(heading_chunk), 400)
+        self.assertIn("English event details", heading_chunk)
 
     def test_retries_transient_reply_container_errors(self):
         original_delay = MODULE.THREADS_REPLY_SETTLE_SECONDS

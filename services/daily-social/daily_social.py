@@ -880,20 +880,36 @@ def split_threads_text(text: str, limit: int = THREADS_MAX_POST_LENGTH) -> list[
 
     def append_piece(piece: str, separator: str) -> None:
         nonlocal current
-        candidate = f"{current}{separator}{piece}" if current else piece
-        if len(candidate) <= limit:
-            current = candidate
-            return
-        if current:
-            chunks.append(current)
-            current = ""
-        while len(piece) > limit:
+        while piece:
+            joiner = separator if current else ""
+            available = limit - len(current) - len(joiner)
+            if len(piece) <= available:
+                current = f"{current}{joiner}{piece}" if current else piece
+                return
+
+            # Fill a mostly empty remainder instead of emitting a short post that
+            # contains only a link or language heading.
+            if current and available >= 80:
+                boundary = piece.rfind(" ", 0, available + 1)
+                if boundary > 0:
+                    current = f"{current}{joiner}{piece[:boundary].rstrip()}"
+                    chunks.append(current)
+                    current = ""
+                    piece = piece[boundary:].lstrip()
+                    separator = ""
+                    continue
+
+            if current:
+                chunks.append(current)
+                current = ""
+                continue
+
             boundary = piece.rfind(" ", 0, limit + 1)
             if boundary <= 0:
                 boundary = limit
             chunks.append(piece[:boundary].rstrip())
             piece = piece[boundary:].lstrip()
-        current = piece
+            separator = ""
 
     for paragraph in text.split("\n\n"):
         append_piece(paragraph, "\n\n")
@@ -981,8 +997,9 @@ def publish_threads_text(
 ) -> list[str]:
     chunks = split_threads_text(text)
     post_ids: list[str] = []
-    reply_to_id = None
+    root_post_id = None
     for index, chunk in enumerate(chunks, start=1):
+        reply_to_id = root_post_id
         try:
             creation_id = create_threads_container_with_retry(
                 credentials["THREADS_USER_ID"],
@@ -1004,7 +1021,8 @@ def publish_threads_text(
         if on_post_published:
             on_post_published(post_ids.copy(), len(chunks))
         LOGGER.info("Published Threads chunk %s/%s", index, len(chunks))
-        reply_to_id = post_id
+        if root_post_id is None:
+            root_post_id = post_id
     return post_ids
 
 
