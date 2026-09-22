@@ -25,6 +25,6 @@ jobs:
           python-version: "3.11"
           cache: pip
       - name: Install collector dependencies
-        run: pip install -r services/collect-events/requirements.txt
+        run: pip install -r services/collect-events/requirements.txt boto3
       - name: Probe public Meet Boston endpoints
         run: python scripts/probe_meet_boston.py
