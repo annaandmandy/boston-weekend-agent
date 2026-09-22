@@ -35,6 +35,12 @@ MEET_BOSTON_DETAIL_LIMIT = int(os.environ.get("MEET_BOSTON_DETAIL_LIMIT", "12"))
 MEET_BOSTON_CRAWL_DELAY_SECONDS = float(
     os.environ.get("MEET_BOSTON_CRAWL_DELAY_SECONDS", "2")
 )
+MEET_BOSTON_STAGING_KEY = os.environ.get(
+    "MEET_BOSTON_STAGING_KEY", "ingestion/meet-boston/latest.json"
+)
+MEET_BOSTON_STAGING_MAX_AGE_HOURS = float(
+    os.environ.get("MEET_BOSTON_STAGING_MAX_AGE_HOURS", "30")
+)
 TICKETMASTER_RADIUS_MILES = int(os.environ.get("TICKETMASTER_RADIUS_MILES", "25"))
 REQUEST_TIMEOUT_SECONDS = int(os.environ.get("REQUEST_TIMEOUT_SECONDS", "15"))
 MAX_RETRIES = int(os.environ.get("MAX_RETRIES", "3"))
@@ -1223,8 +1229,9 @@ def parse_meet_boston_detail(html: str) -> dict[str, Any]:
     }
 
 
-def fetch_meet_boston_events() -> list[dict[str, Any]]:
-    LOGGER.info("Fetching Meet Boston events")
+def fetch_meet_boston_direct_events() -> list[dict[str, Any]]:
+    """Fetch Meet Boston directly when no fresh staged snapshot is available."""
+    LOGGER.info("Fetching Meet Boston events directly")
     response = request_with_retry(
         lambda: requests.get(
             "https://www.meetboston.com/event/rss/",
@@ -1263,6 +1270,84 @@ def fetch_meet_boston_events() -> list[dict[str, Any]]:
         detail_limit,
     )
     return events
+
+
+def load_staged_meet_boston_events(
+    *, now: datetime | None = None
+) -> list[dict[str, Any]] | None:
+    """Load a fresh GitHub-ingested Meet Boston snapshot from S3."""
+    try:
+        response = S3.get_object(Bucket=BUCKET_NAME, Key=MEET_BOSTON_STAGING_KEY)
+        payload = json.loads(response["Body"].read().decode("utf-8"))
+    except Exception as error:
+        LOGGER.warning(
+            "Meet Boston staging snapshot unavailable: %s", type(error).__name__
+        )
+        return None
+
+    if payload.get("schema_version") != 1 or payload.get("source") != "Meet Boston":
+        LOGGER.warning("Meet Boston staging snapshot has an unsupported schema")
+        return None
+
+    fetched_at_value = clean_text(payload.get("fetched_at"))
+    try:
+        fetched_at = datetime.fromisoformat(
+            (fetched_at_value or "").replace("Z", "+00:00")
+        )
+    except ValueError:
+        LOGGER.warning("Meet Boston staging snapshot has an invalid fetched_at")
+        return None
+    if fetched_at.tzinfo is None:
+        fetched_at = fetched_at.replace(tzinfo=timezone.utc)
+
+    reference = now or datetime.now(timezone.utc)
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+    age_hours = (
+        reference.astimezone(timezone.utc) - fetched_at.astimezone(timezone.utc)
+    ).total_seconds() / 3600
+    if age_hours < -1 or age_hours > MEET_BOSTON_STAGING_MAX_AGE_HOURS:
+        LOGGER.warning(
+            "Meet Boston staging snapshot is stale (age %.1f hours)", age_hours
+        )
+        return None
+
+    raw_events = payload.get("events")
+    if not isinstance(raw_events, list):
+        LOGGER.warning("Meet Boston staging snapshot does not contain an event list")
+        return None
+
+    today = reference.astimezone(EASTERN).date()
+    events = []
+    for raw in raw_events:
+        if not isinstance(raw, dict):
+            continue
+        event = dict(raw)
+        event["source"] = "Meet Boston"
+        if (
+            clean_text(event.get("name"))
+            and clean_text(event.get("link"))
+            and is_in_collection_window(event.get("date"), today=today)
+        ):
+            events.append(event)
+    if not events:
+        LOGGER.warning("Meet Boston staging snapshot has no usable current events")
+        return None
+
+    LOGGER.info(
+        "Meet Boston loaded %s events from fresh S3 staging (age %.1f hours)",
+        len(events),
+        age_hours,
+    )
+    return events[:MAX_MEET_BOSTON_EVENTS]
+
+
+def fetch_meet_boston_events() -> list[dict[str, Any]]:
+    staged = load_staged_meet_boston_events()
+    if staged is not None:
+        return staged
+    LOGGER.warning("Falling back to direct Meet Boston collection")
+    return fetch_meet_boston_direct_events()
 
 
 def deduplicate_and_rank(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
