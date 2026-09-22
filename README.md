@@ -190,9 +190,9 @@ tests each Lambda independently before changing the production state machine.
   feed currently blocks the Lambda egress path. GitHub assumes a narrowly scoped
   AWS role through OIDC, writes a versioned S3 staging snapshot, and the collector
   accepts it only while fresh. See `docs/meet-boston-ingestion.md`.
-- One bilingual social post (Traditional Chinese first, English second) is generated daily
-  and reused unchanged for Threads and Xiaohongshu, with a 48-hour event
-  cooldown.
+- One bilingual social edition is generated daily and reused for Threads and
+  Xiaohongshu, with a 48-hour event cooldown. Threads always publishes exactly
+  two posts: one Traditional Chinese root post followed by one English reply.
 - Both social copy and weekend letters keep Bo's fixed opening and signoff while
   placing varied contextual kaomoji inside the prose. The normal OpenAI call
   count is unchanged; a failed voice contract triggers at most one auditable

@@ -176,6 +176,9 @@ class DailySocialTests(unittest.TestCase):
             campaign["ranking_policy"]["method"], "bobo_ai_semantic_ranking"
         )
         self.assertEqual(campaign["openai_call_count"], 2)
+        self.assertEqual(len(campaign["thread_posts"]), 2)
+        self.assertIn("完整活動：", campaign["thread_posts"][0])
+        self.assertIn("Full activity list:", campaign["thread_posts"][1])
 
     def test_ai_ranking_clamps_dimension_overflow_and_records_warning(self):
         response = json.dumps(
@@ -270,6 +273,35 @@ class DailySocialTests(unittest.TestCase):
         self.assertIn("#Boston #波士頓生活", rendered)
         self.assertIn("— 波波 Bo ⌖ˎˊ˗ 〔•ᴗ•〕ゞ", rendered)
 
+    def test_renders_exactly_one_chinese_post_and_one_english_reply(self):
+        content = {
+            "zh": {"title": "今天去哪", "body": "先去散步，再看一場表演。"},
+            "en": {"title": "Boston today", "body": "Take a walk, then see a show."},
+            "hashtags": ["Boston", "Weekend", "GreaterBoston", "unused"],
+        }
+        posts = MODULE.validate_threads_posts(content, "⌖ˎˊ˗ 〔✦ᴗ✦〕ノ")
+
+        self.assertEqual(len(posts), 2)
+        self.assertIn("今天去哪", posts[0])
+        self.assertNotIn("Boston today", posts[0])
+        self.assertIn("Boston today", posts[1])
+        self.assertNotIn("今天去哪", posts[1])
+        self.assertIn(MODULE.WEBSITE_URL, posts[0])
+        self.assertIn(MODULE.WEBSITE_URL, posts[1])
+        self.assertIn("#Boston #Weekend #GreaterBoston", posts[1])
+        self.assertNotIn("#unused", posts[1])
+        self.assertTrue(all(len(post) <= 500 for post in posts))
+
+    def test_two_post_contract_rejects_oversize_language(self):
+        content = {
+            "zh": {"title": "今天去哪", "body": "很長" * 250},
+            "en": {"title": "Boston today", "body": "Short copy."},
+            "hashtags": [],
+        }
+
+        with self.assertRaisesRegex(ValueError, "exceed the 500-character limit"):
+            MODULE.validate_threads_posts(content)
+
     def test_parses_structured_bilingual_content(self):
         content = MODULE.parse_model_json(
             """{
@@ -298,8 +330,10 @@ class DailySocialTests(unittest.TestCase):
         self.assertIn("Never use Simplified Chinese", prompt_text)
         self.assertIn("instead of a numbered or repetitive list", prompt_text)
         self.assertIn("conversational tiny story", prompt_text)
-        self.assertIn("350-500 Traditional Chinese characters", prompt_text)
-        self.assertIn("220-300 English words", prompt_text)
+        self.assertIn("330 Traditional Chinese characters", prompt_text)
+        self.assertIn("380 characters, not words", prompt_text)
+        self.assertIn("2-3 strongest activities", prompt_text)
+        self.assertIn("do not include individual event URLs", prompt_text)
         self.assertIn("2-3 varied kaomoji", prompt_text)
         self.assertIn("emotional punctuation", prompt_text)
         self.assertIn("fixed top expression", prompt_text.replace("\n", " "))
@@ -696,6 +730,7 @@ class DailySocialTests(unittest.TestCase):
             return_value={
                 "campaign_id": "2026-09-22",
                 "shared_text": shared_text,
+                "thread_posts": ["中文主文", "English reply"],
             },
         ), patch.object(
             MODULE, "write_publication_state", side_effect=lambda _, value: states.append(value)
@@ -704,15 +739,16 @@ class DailySocialTests(unittest.TestCase):
         ), patch.object(
             MODULE, "refresh_threads_token_if_needed", return_value=credentials
         ), patch.object(
-            MODULE, "publish_threads_text", return_value=["post-1"]
-        ):
+            MODULE, "publish_threads_posts", return_value=["post-1", "post-2"]
+        ) as publish:
             result = MODULE.retry_failed_threads_publication(
                 now, MODULE.publication_key(now), existing
             )
 
         self.assertEqual(result["threads_publish_status"], "published_retry")
         self.assertEqual(states[-1]["status"], "published")
-        self.assertEqual(states[-1]["post_ids"], ["post-1"])
+        self.assertEqual(states[-1]["post_ids"], ["post-1", "post-2"])
+        self.assertEqual(publish.call_args.args[0], ["中文主文", "English reply"])
 
 
 if __name__ == "__main__":

@@ -42,6 +42,7 @@ THREADS_PUBLISH_ENABLED = os.environ.get(
 ).lower() in {"1", "true", "yes"}
 THREADS_API_BASE = "https://graph.threads.net/v1.0"
 THREADS_MAX_POST_LENGTH = 500
+THREADS_LENGTH_CHECK_MOOD = "⌖ˎˊ˗ 〔˶ᵔ ᵕ ᵔ˶〕"
 THREADS_REPLY_SETTLE_SECONDS = float(
     os.environ.get("THREADS_REPLY_SETTLE_SECONDS", "2")
 )
@@ -639,15 +640,17 @@ and a natural English version second. Never use Simplified Chinese characters or
 Mainland-China-specific wording. Both versions must describe the same selected
 activities and must not introduce facts that appear in only one language. Write
 each version as a conversational tiny story from a Boston friend: open with a
-small everyday scene, mood, or question, use 3-5 short paragraphs, and weave the
+small everyday scene, mood, or question, use 2-3 short paragraphs, and weave the
 activities into possible ways the day could unfold. Avoid a compressed summary
-or a repetitive numbered list. Aim for 350-500 Traditional Chinese characters
-and 220-300 English words when enough verified activities are available.
+or a repetitive numbered list. Keep the Chinese title and body together under
+330 Traditional Chinese characters. Keep the English title and body together
+under 380 characters, not words. These are strict limits because each language
+must fit in one Threads post after the report URL, hashtags, and signature are
+added.
 
-Mention 3-5 activities when available, explain why each fits the day's story,
-preserve their source links, and end each body with the weekend-report URL. Use
-plain text and raw URLs; do not use Markdown
-link syntax because the same copy is published directly to both platforms. Do not
+Mention only the 2-3 strongest activities, explain briefly why they fit the day's
+story, and do not include individual event URLs. The application adds the weekend
+report URL where readers can open every activity link. Do not use Markdown. Do not
 claim that an event is recommended from personal experience. Never use Unicode
 emoji. In each language body, naturally place 2-3 varied kaomoji inside sentences
 at real emotional turns: delight at a rare find, playful indecision, weather
@@ -664,7 +667,8 @@ let it reduce clarity. Do not imitate or translate this typography in English.
 
 Return strict JSON with exactly these top-level keys: zh, en, hashtags. `zh` and
 `en` must each contain exactly `title` and `body` strings. `hashtags` must be an
-array of language-neutral or bilingual strings without leading # characters.""",
+array of at most three language-neutral or bilingual strings without leading #
+characters.""",
             ),
             (
                 "human",
@@ -745,10 +749,14 @@ def build_kaomoji_repair_prompt():
                 "system",
                 """You are editing one bilingual social post written by 波波 Bo.
 Return strict JSON with exactly `zh`, `en`, and `hashtags`. Preserve every fact,
-event, date, time, price, venue, URL, hashtag, language, and overall meaning from
-the draft. Do not add or remove an event. Do not add a signature or Unicode emoji.
+event, date, time, price, venue, language, and overall meaning from the draft.
+You may remove individual event URLs to meet the channel contract, but do not add
+or remove an event. Do not add a signature or Unicode emoji.
 
-Repair only the conversational voice: each language body must contain 2-3
+Repair the format and conversational voice. Mention only the 2-3 strongest
+activities and remove individual event URLs. Keep the Chinese title and body
+together under 330 characters and the English title and body together under 380
+characters. Use at most three hashtags. Each language body must contain 2-3
 different kaomoji naturally inside sentences at genuine emotional turns. They
 must not be standalone lines, paragraph prefixes, or titles. Vary their shapes;
 examples of the range include 〔•̀ᴗ•́〕و, (≧▽≦)ノ, and (((o(*ﾟ▽ﾟ*)o))). Keep
@@ -777,6 +785,7 @@ def generate_content(
     try:
         content = parse_model_json(response.content)
         validate_contextual_kaomoji(content)
+        validate_threads_posts(content, THREADS_LENGTH_CHECK_MOOD)
     except (ValueError, json.JSONDecodeError) as error:
         LOGGER.warning("Retrying social format/voice contract: %s", error)
         repaired = (build_kaomoji_repair_prompt() | model).invoke(
@@ -785,6 +794,7 @@ def generate_content(
         responses.append(repaired)
         content = parse_model_json(repaired.content, sanitize_emoji=True)
         validate_contextual_kaomoji(content)
+        validate_threads_posts(content, THREADS_LENGTH_CHECK_MOOD)
 
     stages = []
     for index, item in enumerate(responses, start=1):
@@ -807,7 +817,7 @@ def generate_content(
     }
     return content, {
         "model": OPENAI_MODEL,
-        "prompt_version": "bobo-social-story-v5-kaomoji-contract",
+        "prompt_version": "bobo-social-story-v6-two-post-contract",
         "openai_call_count": len(responses),
         "retried": len(responses) > 1,
         "stages": stages,
@@ -837,20 +847,52 @@ def select_kaomoji(events: list[dict[str, Any]], now: datetime) -> str:
 def render_shared_text(
     content: dict[str, Any], mood_kaomoji: str | None = None
 ) -> str:
+    return "\n\n—— English ——\n\n".join(
+        render_threads_posts(content, mood_kaomoji)
+    )
+
+
+def render_threads_posts(
+    content: dict[str, Any], mood_kaomoji: str | None = None
+) -> list[str]:
+    """Render exactly one Traditional Chinese post and one English reply."""
     persona = load_persona()
-    hashtags = " ".join(f"#{tag}" for tag in content["hashtags"])
-    title = content["zh"]["title"]
+    hashtags = " ".join(
+        f"#{tag}" for tag in content["hashtags"][:3]
+    )
+    title = content["zh"]["title"].strip()
     if mood_kaomoji:
         title = f"{title} {mood_kaomoji}"
-    return (
+    zh_post = (
         f"{title}\n\n"
-        f"{content['zh']['body']}\n\n"
-        "—— English ——\n\n"
-        f"{content['en']['title']}\n\n"
-        f"{content['en']['body']}\n\n"
-        f"{hashtags}\n\n"
+        f"{content['zh']['body'].strip()}\n\n"
+        f"完整活動：{WEBSITE_URL}\n\n"
         f"{persona['signoff']}"
     ).strip()
+    en_parts = [
+        content["en"]["title"].strip(),
+        content["en"]["body"].strip(),
+        f"Full activity list: {WEBSITE_URL}",
+    ]
+    if hashtags:
+        en_parts.append(hashtags)
+    en_parts.append(persona["signoff"])
+    return [zh_post, "\n\n".join(en_parts).strip()]
+
+
+def validate_threads_posts(
+    content: dict[str, Any], mood_kaomoji: str | None = None
+) -> list[str]:
+    posts = render_threads_posts(content, mood_kaomoji)
+    if len(posts) != 2:
+        raise ValueError("Threads content must render as exactly two posts")
+    lengths = [len(post) for post in posts]
+    if any(length > THREADS_MAX_POST_LENGTH for length in lengths):
+        raise ValueError(
+            "Bilingual Threads posts exceed the 500-character limit: "
+            f"zh={lengths[0]}, en={lengths[1]}"
+        )
+    return posts
 
 
 def render_threads_introduction() -> str:
@@ -995,24 +1037,37 @@ def publish_threads_text(
     credentials: dict[str, str],
     on_post_published: Any | None = None,
 ) -> list[str]:
-    chunks = split_threads_text(text)
+    return publish_threads_posts(
+        split_threads_text(text), credentials, on_post_published
+    )
+
+
+def publish_threads_posts(
+    posts: list[str],
+    credentials: dict[str, str],
+    on_post_published: Any | None = None,
+) -> list[str]:
+    if not posts or any(
+        not post or len(post) > THREADS_MAX_POST_LENGTH for post in posts
+    ):
+        raise ValueError("Threads posts must be non-empty and at most 500 characters")
     post_ids: list[str] = []
     root_post_id = None
-    for index, chunk in enumerate(chunks, start=1):
+    for index, post in enumerate(posts, start=1):
         reply_to_id = root_post_id
         try:
             post_id = auto_publish_threads_text_with_retry(
-                chunk, credentials, reply_to_id
+                post, credentials, reply_to_id
             )
         except Exception:
             LOGGER.exception(
-                "Threads publication failed at chunk %s/%s", index, len(chunks)
+                "Threads publication failed at post %s/%s", index, len(posts)
             )
             raise
         post_ids.append(post_id)
         if on_post_published:
-            on_post_published(post_ids.copy(), len(chunks))
-        LOGGER.info("Published Threads chunk %s/%s", index, len(chunks))
+            on_post_published(post_ids.copy(), len(posts))
+        LOGGER.info("Published Threads post %s/%s", index, len(posts))
         if root_post_id is None:
             root_post_id = post_id
     return post_ids
@@ -1200,6 +1255,7 @@ def store_campaign(
         "generated_at": now.isoformat(),
         "content": content,
         "shared_text": render_shared_text(content, mood_kaomoji),
+        "thread_posts": render_threads_posts(content, mood_kaomoji),
         "selected_event_ids": event_ids,
         "ranking_policy": {
             "version": RANKING_PROMPT_VERSION,
@@ -1312,7 +1368,20 @@ def retry_failed_threads_publication(
     }
     write_publication_state(publish_key, claim)
     published_post_ids: list[str] = []
-    chunk_count = len(split_threads_text(shared_text))
+    stored_posts = campaign.get("thread_posts")
+    if isinstance(stored_posts, list) and len(stored_posts) == 2:
+        thread_posts = [str(post) for post in stored_posts]
+        if any(
+            not post or len(post) > THREADS_MAX_POST_LENGTH
+            for post in thread_posts
+        ):
+            raise RuntimeError(
+                "Stored Threads posts do not satisfy the two-post contract"
+            )
+    else:
+        # Campaigns created before the two-post contract only stored shared_text.
+        thread_posts = split_threads_text(shared_text)
+    chunk_count = len(thread_posts)
 
     def record_publish_progress(ids: list[str], total: int) -> None:
         published_post_ids[:] = ids
@@ -1332,8 +1401,8 @@ def retry_failed_threads_publication(
         credentials = refresh_threads_token_if_needed(
             get_threads_credentials(), now
         )
-        post_ids = publish_threads_text(
-            shared_text,
+        post_ids = publish_threads_posts(
+            thread_posts,
             credentials,
             on_post_published=record_publish_progress,
         )
@@ -1409,6 +1478,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         raise RuntimeError("AI ranking returned no selectable events")
     mood_kaomoji = select_kaomoji(selected, now)
     content, writing_metadata = generate_content(selected, now)
+    thread_posts = validate_threads_posts(content, mood_kaomoji)
     if isinstance(event, dict) and event.get("dry_run"):
         return {
             "success": True,
@@ -1429,6 +1499,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 for rank, item in enumerate(ranked, start=1)
             ],
             "shared_text": render_shared_text(content, mood_kaomoji),
+            "thread_posts": thread_posts,
             "threads": {"status": "disabled_dry_run"},
         }
     keys = store_campaign(
@@ -1452,7 +1523,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         }
         write_publication_state(publish_key, claim, claim=True)
         published_post_ids: list[str] = []
-        chunk_count = len(split_threads_text(shared_text))
+        chunk_count = len(thread_posts)
 
         def record_publish_progress(post_ids: list[str], total: int) -> None:
             published_post_ids[:] = post_ids
@@ -1472,8 +1543,8 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             credentials = refresh_threads_token_if_needed(
                 get_threads_credentials(), now
             )
-            post_ids = publish_threads_text(
-                shared_text,
+            post_ids = publish_threads_posts(
+                thread_posts,
                 credentials,
                 on_post_published=record_publish_progress,
             )
