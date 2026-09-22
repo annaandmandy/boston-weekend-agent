@@ -24,7 +24,7 @@ BUCKET_NAME = os.environ.get("REPORT_BUCKET", "boston-weekend-agent-reports")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6-luna")
 OPENAI_REASONING_EFFORT = os.environ.get("OPENAI_REASONING_EFFORT", "none")
 PROMPT_VERSION = os.environ.get(
-    "REPORT_PROMPT_VERSION", "v3.4-bobo-kaomoji-contract"
+    "REPORT_PROMPT_VERSION", "v4.0-daily-rolling-editions"
 )
 RANKING_PROMPT_VERSION = "ai-global-top-10-v2"
 BOBO_MEMORY_KEY = os.environ.get("BOBO_MEMORY_KEY", "agent/bobo-memory.json")
@@ -223,11 +223,36 @@ def archive_report_inputs(
 def determine_edition(now: datetime, override: str | None = None) -> str:
     if override:
         return override
-    if now.weekday() == 3:
+    weekday = now.weekday()
+    if weekday <= 2:
+        return "week-ahead"
+    if weekday == 3:
         return "thursday-preview"
-    if now.weekday() == 4:
+    if weekday == 4:
         return "friday-update"
-    return "weekend-update"
+    if weekday == 5:
+        return "weekend-live"
+    return "sunday-and-next"
+
+
+def report_date_window(now: datetime) -> tuple[date, date]:
+    """Return the editorial window for today's report edition."""
+    today = now.date()
+    if now.weekday() == 3:
+        start = today + timedelta(days=1)
+        return start, start + timedelta(days=2)
+    if now.weekday() == 4:
+        return today, today + timedelta(days=2)
+    return today, today + timedelta(days=6)
+
+
+def report_coverage(now: datetime) -> dict[str, str]:
+    start, end = report_date_window(now)
+    return {
+        "start_date": start.isoformat(),
+        "end_date": end.isoformat(),
+        "timezone": str(EASTERN),
+    }
 
 
 def weekend_start(now: datetime) -> date:
@@ -360,12 +385,13 @@ def filter_and_prioritize_events(
     events_data: dict[str, Any], now: datetime
 ) -> list[dict[str, Any]]:
     today = now.date()
-    if today.weekday() >= 4:
-        start = today
-        end = today + timedelta(days=6 - today.weekday())
-    else:
-        start = today + timedelta(days=4 - today.weekday())
-        end = start + timedelta(days=2)
+    start, end = report_date_window(now)
+    return filter_events_in_window(events_data, today, start, end)
+
+
+def filter_events_in_window(
+    events_data: dict[str, Any], today: date, start: date, end: date
+) -> list[dict[str, Any]]:
     selected = []
     for original in events_data.get("events", []):
         if str(original.get("availability_status") or "").lower() in {
@@ -409,6 +435,28 @@ def filter_and_prioritize_events(
         event["priority_score"] = score
         selected.append(event)
     return sorted(selected, key=lambda item: item["priority_score"], reverse=True)
+
+
+def public_activities_for_next_ten_days(
+    events_data: dict[str, Any], now: datetime
+) -> list[dict[str, Any]]:
+    """Expose all eligible collected events without asking the LLM to select them."""
+    today = now.date()
+    events = filter_events_in_window(
+        events_data,
+        today,
+        today,
+        today + timedelta(days=9),
+    )
+    activities = [public_activity(event) for event in events]
+    return sorted(
+        activities,
+        key=lambda item: (
+            item.get("date") or "9999-12-31",
+            item.get("time") or "99:99",
+            item.get("title") or "",
+        ),
+    )
 
 
 def build_ranking_prompt():
@@ -802,12 +850,21 @@ Current context:
 - Weekend status: {{weekend_status}}
 - Upcoming holidays: {{holiday_context}}
 - Edition: {{edition}}
+- Coverage window: {{coverage_start}} through {{coverage_end}}
 
-For a Thursday preview, present this as an early planning edition and say that
-weather and event details will be checked again Friday morning. For a Friday
-update, naturally call out material new or changed listings and refreshed
-weather. Never describe an event as cancelled merely because it is listed as
-unconfirmed missing.
+Adapt the letter to its edition:
+- `week-ahead`: cover the next seven days, with extra attention to the upcoming
+  weekend and a few worthwhile sooner plans.
+- `thursday-preview`: present an early Friday-Sunday planning edition and say
+  that weather and event details will be checked again Friday morning.
+- `friday-update`: call out material new or changed Friday-Sunday listings and
+  refreshed weather.
+- `weekend-live`: prioritize what remains on Saturday and Sunday, then add a
+  short looking-ahead note for standout plans later in the coverage window.
+- `sunday-and-next`: make today immediately useful, then transition into a
+  concise preview of the coming week.
+Never describe an event as cancelled merely because it is listed as unconfirmed
+missing. Never recommend an event outside the supplied coverage window.
 
 Write two independent versions of a generous bilingual weekend letter, not a
 database summary or a tourism brochure. `zh` must use natural Taiwan Traditional
@@ -859,7 +916,7 @@ language separately and adds Bo's fixed identity anchors deterministically.""",
             ),
             (
                 "human",
-                """Generate this week's Boston weekend report.
+                """Generate today's Boston weekend and days-ahead report.
 
 Weather for the Traditional Chinese version:
 - Best outdoor day: {best_day}
@@ -1021,7 +1078,8 @@ def generate_report(
     context = build_time_context(now)
     edition = determine_edition(now, edition_override)
     candidates = filter_and_prioritize_events(events_data, now)
-    activities = [public_activity(event) for event in candidates]
+    activities = public_activities_for_next_ten_days(events_data, now)
+    coverage = report_coverage(now)
     memory = load_bobo_memory()
     events, ranking_metadata = ai_rank_weekend_events(candidates, memory)
     recommendations = (weather_data.get("summary") or {}).get("recommendations") or {}
@@ -1031,6 +1089,8 @@ def generate_report(
     prompt_values = {
         **context,
         "edition": edition,
+        "coverage_start": coverage["start_date"],
+        "coverage_end": coverage["end_date"],
         "holiday_context": ", ".join(context["holidays"]) or "None",
         "best_day": top_pick.get("date", "Unknown"),
         "best_time": top_pick.get("time_window", "Unknown"),
@@ -1097,6 +1157,7 @@ def generate_report(
         "generated_at": now.isoformat(),
         "events_count": len(events),
         "edition": edition,
+        "coverage": coverage,
         "model": OPENAI_MODEL,
         "prompt_version": PROMPT_VERSION,
         "persona": {
@@ -1143,9 +1204,10 @@ def store_report(result: dict[str, Any], now: datetime) -> dict[str, str]:
             ContentType="text/plain; charset=utf-8",
         )
     json_payload = {
-        "schema_version": 2,
+        "schema_version": 3,
         "generated_at": result["generated_at"],
         "edition": result["edition"],
+        "coverage": result.get("coverage"),
         "languages": result["languages"],
         "activities": result.get("activities", []),
     }
@@ -1209,6 +1271,7 @@ def store_analytics_manifest(
         "run_id": prefix.rsplit("run_id=", 1)[-1],
         "generated_at": result["generated_at"],
         "edition": result["edition"],
+        "coverage": result.get("coverage"),
         "model": result["model"],
         "prompt_version": result["prompt_version"],
         "persona": result.get("persona"),

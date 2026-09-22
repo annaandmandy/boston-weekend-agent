@@ -47,6 +47,8 @@ class LangChainReportTests(unittest.TestCase):
             weekend_status="weekend",
             holiday_context="None",
             edition="friday-update",
+            coverage_start="2026-09-18",
+            coverage_end="2026-09-20",
             best_day="Saturday",
             best_time="afternoon",
             temperature_zh="20°C",
@@ -175,6 +177,11 @@ class LangChainReportTests(unittest.TestCase):
             "report": "legacy combined report",
             "generated_at": now.isoformat(),
             "edition": "friday-update",
+            "coverage": {
+                "start_date": "2026-09-18",
+                "end_date": "2026-09-20",
+                "timezone": "America/New_York",
+            },
             "languages": {
                 "zh": {
                     "locale": "zh-TW",
@@ -218,7 +225,8 @@ class LangChainReportTests(unittest.TestCase):
             if call.kwargs["Key"] == "reports/weekend_summary.json"
         )
         payload = __import__("json").loads(latest_json_call.kwargs["Body"])
-        self.assertEqual(payload["schema_version"], 2)
+        self.assertEqual(payload["schema_version"], 3)
+        self.assertEqual(payload["coverage"]["end_date"], "2026-09-20")
         self.assertEqual(payload["languages"]["zh"]["temperature_unit"], "C")
         self.assertEqual(payload["languages"]["en"]["temperature_unit"], "F")
         self.assertEqual(payload["activities"][0]["title"], "Open Studios")
@@ -398,6 +406,51 @@ class LangChainReportTests(unittest.TestCase):
             {event["name"] for event in events}, {"Friday Music", "Sunday Tour"}
         )
 
+    def test_monday_week_ahead_covers_today_through_sunday(self):
+        now = datetime(2026, 9, 14, 7, tzinfo=ZoneInfo("America/New_York"))
+        data = {
+            "events": [
+                {"name": "Monday Walk", "date": "2026-09-14"},
+                {"name": "Sunday Festival", "date": "2026-09-20"},
+                {"name": "Next Monday", "date": "2026-09-21"},
+            ]
+        }
+        events = MODULE.filter_and_prioritize_events(data, now)
+        self.assertEqual(
+            {event["name"] for event in events},
+            {"Monday Walk", "Sunday Festival"},
+        )
+
+    def test_weekend_live_keeps_looking_ahead_events(self):
+        now = datetime(2026, 9, 19, 7, tzinfo=ZoneInfo("America/New_York"))
+        data = {
+            "events": [
+                {"name": "Saturday Market", "date": "2026-09-19"},
+                {"name": "Wednesday Exhibit", "date": "2026-09-23"},
+                {"name": "Following Saturday", "date": "2026-09-26"},
+            ]
+        }
+        events = MODULE.filter_and_prioritize_events(data, now)
+        self.assertEqual(
+            {event["name"] for event in events},
+            {"Saturday Market", "Wednesday Exhibit"},
+        )
+
+    def test_activities_include_full_ten_day_window(self):
+        now = datetime(2026, 9, 17, 7, tzinfo=ZoneInfo("America/New_York"))
+        data = {
+            "events": [
+                {"event_id": "today", "name": "Today", "date": "2026-09-17"},
+                {"event_id": "day-9", "name": "Day 9", "date": "2026-09-26"},
+                {"event_id": "day-10", "name": "Day 10", "date": "2026-09-27"},
+            ]
+        }
+        activities = MODULE.public_activities_for_next_ten_days(data, now)
+        self.assertEqual(
+            [activity["event_id"] for activity in activities],
+            ["today", "day-9"],
+        )
+
     def test_weekend_report_excludes_unavailable_event(self):
         now = datetime(2026, 9, 17, 17, tzinfo=ZoneInfo("America/New_York"))
         data = {
@@ -528,8 +581,12 @@ class LangChainReportTests(unittest.TestCase):
             "Enjoy your weekend!",
         )
 
-    def test_report_edition_follows_thursday_and_friday(self):
+    def test_report_edition_follows_daily_cycle(self):
         eastern = ZoneInfo("America/New_York")
+        self.assertEqual(
+            MODULE.determine_edition(datetime(2026, 9, 14, 7, tzinfo=eastern)),
+            "week-ahead",
+        )
         self.assertEqual(
             MODULE.determine_edition(datetime(2026, 9, 17, 7, tzinfo=eastern)),
             "thursday-preview",
@@ -537,6 +594,14 @@ class LangChainReportTests(unittest.TestCase):
         self.assertEqual(
             MODULE.determine_edition(datetime(2026, 9, 18, 7, tzinfo=eastern)),
             "friday-update",
+        )
+        self.assertEqual(
+            MODULE.determine_edition(datetime(2026, 9, 19, 7, tzinfo=eastern)),
+            "weekend-live",
+        )
+        self.assertEqual(
+            MODULE.determine_edition(datetime(2026, 9, 20, 7, tzinfo=eastern)),
+            "sunday-and-next",
         )
 
     def test_missing_listing_is_explicitly_not_a_cancellation(self):

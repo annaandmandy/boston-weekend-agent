@@ -7,13 +7,19 @@ shift the local publishing time.
 | --- | --- | --- |
 | Daily 06:00 | Event collector | Today through the next ten days in `events/latest.json` |
 | Daily 07:00 | Daily social generator | One shared bilingual Threads/Xiaohongshu draft in `social/latest.json` and `.txt` |
-| Thursday 07:15 | Full weekend workflow | Early Friday-Sunday report with weather |
-| Friday 07:15 | Full weekend workflow | Revised report with fresh listings and weather |
+| Daily 07:15 | Rolling report workflow | Fresh website letter, weather, and ten-day Activities list |
 
 The website continues to read `reports/weekend_summary.txt`. Each report is also
 archived under `reports/archive/YYYY/MM/` with its edition name.
 
-The Thursday run also stores `reports/baselines/weekend_YYYY-MM-DD.json`. The
+The daily report reuses the 06:00 event snapshot instead of collecting the same
+providers twice. Monday-Wednesday use a seven-day `week-ahead` edition; Thursday
+keeps the Friday-Sunday planning preview; Friday keeps the baseline-aware update;
+Saturday uses `weekend-live`; and Sunday uses `sunday-and-next`. The public
+Activities payload contains every eligible event from the next ten days even
+though Bo's letter only discusses the strongest ranked subset.
+
+The Thursday run stores `reports/baselines/weekend_YYYY-MM-DD.json`. The
 Friday run compares against that Thursday baseline rather than the immediately
 preceding daily collection, so its new and updated items reflect the actual
 published preview.

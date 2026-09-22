@@ -108,7 +108,7 @@ Browser -> CloudFront -> reports/weekend_summary.txt
 
 The production distribution is `EBSSO01S4DVXI` at
 `d2ugiuoady5eh5.cloudfront.net`. It uses the managed `CachingDisabled` policy so
-new Thursday and Friday reports are visible immediately, plus the managed
+new daily reports are visible immediately, plus the managed
 `SimpleCORS` response headers policy for browser access.
 
 Apply `infrastructure/cloudfront/report-bucket-policy.json` after replacing
@@ -237,7 +237,7 @@ The new schedules use `America/New_York` and are documented in
 
 1. Deploy the schedule stack.
 2. Run each new schedule target manually once.
-3. Confirm the Thursday/Friday schedule is enabled.
+3. Confirm the daily rolling report schedule is enabled at 07:15 Eastern.
 4. Disable `boston-weekend-agent-daily-run-rule` so the old daily full workflow
    cannot continue making unnecessary LLM calls.
 5. Do not delete the old rule until the new schedules have run successfully.
