@@ -22,6 +22,11 @@ DEFAULT_REDIRECT_URI = "https://www.hsiangyuhuang.com/threads-oauth/callback"
 DEFAULT_EXPECTED_STATE = "f098bcc6e9ee5fb79055311ca13453d0"
 DEFAULT_EXPECTED_USERNAME = "bostonweekendagent"
 DEFAULT_SECRET_ID = "boston-weekend-agent/threads"
+DEFAULT_SCOPES = (
+    "threads_basic",
+    "threads_content_publish",
+    "threads_manage_replies",
+)
 
 
 def request_json(
@@ -94,6 +99,18 @@ def main() -> int:
     secrets = session.client("secretsmanager")
     ensure_secret(secrets, args.secret_id)
     print(f"Secrets Manager target is ready: {args.secret_id}")
+
+    authorization_query = urllib.parse.urlencode(
+        {
+            "client_id": args.app_id,
+            "redirect_uri": args.redirect_uri,
+            "scope": ",".join(DEFAULT_SCOPES),
+            "response_type": "code",
+            "state": args.expected_state,
+        }
+    )
+    print("Authorize the Threads account with all publishing permissions:")
+    print(f"https://threads.net/oauth/authorize?{authorization_query}")
 
     callback_url = getpass.getpass("Paste the full callback URL (hidden): ")
     code = parse_callback(callback_url, args.expected_state)

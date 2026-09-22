@@ -169,6 +169,18 @@ the callback authorization code. The script validates the expected Threads
 username and writes the long-lived token to `boston-weekend-agent/threads`
 without printing it.
 
+The Meta app and the authorization grant must include all three permissions:
+
+- `threads_basic`
+- `threads_content_publish`
+- `threads_manage_replies`
+
+The last permission is required because daily bilingual copy is longer than a
+single 500-character Threads post. The publisher sends Traditional Chinese as
+the root post and English as follow-up replies. Re-run the OAuth flow whenever
+the permission set changes; adding a permission in the Meta dashboard does not
+retroactively add it to an existing access token.
+
 After the Lambda image and IAM policy are updated, keep
 `THREADS_PUBLISH_ENABLED=false` for one direct invocation and inspect
 `social/latest.txt`. Confirm that the Chinese section uses Traditional Chinese.
