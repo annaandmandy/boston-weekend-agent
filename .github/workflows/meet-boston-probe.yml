@@ -1,0 +1,27 @@
+name: Meet Boston egress probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      AWS_EC2_METADATA_DISABLED: "true"
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install collector dependencies
+        run: pip install -r services/collect-events/requirements.txt
+      - name: Probe public Meet Boston endpoints
+        run: python scripts/probe_meet_boston.py
