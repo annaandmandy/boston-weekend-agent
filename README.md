@@ -186,6 +186,10 @@ tests each Lambda independently before changing the production state machine.
   every morning, with a Thursday planning edition and a Friday baseline-aware
   refresh. Weekend editions keep the current day useful and look ahead without
   asking the LLM to reproduce the complete Activities table.
+- Meet Boston uses a small GitHub Actions ingestion bridge because its public
+  feed currently blocks the Lambda egress path. GitHub assumes a narrowly scoped
+  AWS role through OIDC, writes a versioned S3 staging snapshot, and the collector
+  accepts it only while fresh. See `docs/meet-boston-ingestion.md`.
 - One bilingual social post (Traditional Chinese first, English second) is generated daily
   and reused unchanged for Threads and Xiaohongshu, with a 48-hour event
   cooldown.

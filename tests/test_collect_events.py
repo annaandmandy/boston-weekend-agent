@@ -1,9 +1,10 @@
 import importlib.util
+import io
 import json
 import pathlib
 import sys
 import unittest
-from datetime import date
+from datetime import date, datetime, timezone
 from unittest.mock import MagicMock
 
 
@@ -196,6 +197,90 @@ class CollectEventsTests(unittest.TestCase):
         self.assertEqual(
             date_filter["$lte"]["$date"], "2026-09-28T03:59:59.999Z"
         )
+
+    def test_loads_fresh_meet_boston_staging_snapshot(self):
+        original_s3 = MODULE.S3
+        mock_s3 = MagicMock()
+        mock_s3.get_object.return_value = {
+            "Body": io.BytesIO(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "source": "Meet Boston",
+                        "fetched_at": "2026-09-17T09:30:00+00:00",
+                        "events": [
+                            {
+                                "name": "Harbor Arts Festival",
+                                "date": "2026-09-19",
+                                "source": "Meet Boston",
+                                "link": "https://www.meetboston.com/event/harbor/1/",
+                            }
+                        ],
+                    }
+                ).encode("utf-8")
+            )
+        }
+        MODULE.S3 = mock_s3
+        try:
+            events = MODULE.load_staged_meet_boston_events(
+                now=datetime(2026, 9, 17, 10, tzinfo=timezone.utc)
+            )
+        finally:
+            MODULE.S3 = original_s3
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["name"], "Harbor Arts Festival")
+        mock_s3.get_object.assert_called_once_with(
+            Bucket="boston-weekend-agent-reports",
+            Key="ingestion/meet-boston/latest.json",
+        )
+
+    def test_rejects_stale_meet_boston_staging_snapshot(self):
+        original_s3 = MODULE.S3
+        mock_s3 = MagicMock()
+        mock_s3.get_object.return_value = {
+            "Body": io.BytesIO(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "source": "Meet Boston",
+                        "fetched_at": "2026-09-15T00:00:00+00:00",
+                        "events": [
+                            {
+                                "name": "Old Event",
+                                "date": "2026-09-19",
+                                "link": "https://www.meetboston.com/event/old/1/",
+                            }
+                        ],
+                    }
+                ).encode("utf-8")
+            )
+        }
+        MODULE.S3 = mock_s3
+        try:
+            events = MODULE.load_staged_meet_boston_events(
+                now=datetime(2026, 9, 17, 10, tzinfo=timezone.utc)
+            )
+        finally:
+            MODULE.S3 = original_s3
+
+        self.assertIsNone(events)
+
+    def test_meet_boston_prefers_staging_before_direct_fetch(self):
+        original_staging = MODULE.load_staged_meet_boston_events
+        original_direct = MODULE.fetch_meet_boston_direct_events
+        staged = [{"name": "Staged Festival"}]
+        MODULE.load_staged_meet_boston_events = MagicMock(return_value=staged)
+        MODULE.fetch_meet_boston_direct_events = MagicMock()
+        try:
+            events = MODULE.fetch_meet_boston_events()
+        finally:
+            direct_mock = MODULE.fetch_meet_boston_direct_events
+            MODULE.load_staged_meet_boston_events = original_staging
+            MODULE.fetch_meet_boston_direct_events = original_direct
+
+        self.assertEqual(events, staged)
+        direct_mock.assert_not_called()
 
     def test_ticketmaster_geohash_has_expected_precision(self):
         geohash = MODULE.encode_geohash(42.3601, -71.0589)
