@@ -23,12 +23,17 @@ jobs:
       - name: Check local schedule window
         id: schedule_gate
         shell: bash
+        env:
+          SCHEDULE_EXPRESSION: ${{ github.event.schedule }}
         run: |
-          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]] || [[ "$(TZ=America/New_York date +%H)" == "05" ]]; then
+          eastern_offset="$(TZ=America/New_York date +%z)"
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]] || \
+             [[ "${SCHEDULE_EXPRESSION}" == "0 9 * * *" && "${eastern_offset}" == "-0400" ]] || \
+             [[ "${SCHEDULE_EXPRESSION}" == "0 10 * * *" && "${eastern_offset}" == "-0500" ]]; then
             echo "should_run=true" >> "$GITHUB_OUTPUT"
           else
             echo "should_run=false" >> "$GITHUB_OUTPUT"
-            echo "Skipping duplicate UTC schedule outside the 5 AM America/New_York window."
+            echo "Skipping the UTC trigger that does not map to 5 AM America/New_York."
           fi
       - if: steps.schedule_gate.outputs.should_run == 'true'
         uses: actions/checkout@v4

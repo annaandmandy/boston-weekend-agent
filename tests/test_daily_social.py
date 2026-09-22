@@ -1,3 +1,4 @@
+import hashlib
 import importlib.util
 import json
 import pathlib
@@ -519,6 +520,18 @@ class DailySocialTests(unittest.TestCase):
         self.assertEqual(request.call_args.kwargs["data"]["auto_publish_text"], "true")
         self.assertEqual(request.call_args.kwargs["data"]["media_type"], "TEXT")
 
+    def test_meta_text_auto_publish_supports_direct_reply(self):
+        credentials = {"THREADS_ACCESS_TOKEN": "secret-token"}
+        with patch.object(
+            MODULE, "threads_request_json", return_value={"id": "reply-1"}
+        ) as request:
+            post_id = MODULE.auto_publish_threads_text(
+                "Reply", credentials, "root-1"
+            )
+
+        self.assertEqual(post_id, "reply-1")
+        self.assertEqual(request.call_args.kwargs["data"]["reply_to_id"], "root-1")
+
     def test_campaign_archive_key_is_immutable_for_retries(self):
         original_s3 = MODULE.S3
         MODULE.S3 = MagicMock()
@@ -570,19 +583,15 @@ class DailySocialTests(unittest.TestCase):
             return_value=["first", "second", "third"],
         ), patch.object(
             MODULE,
-            "create_threads_container_with_retry",
-            side_effect=["container-1", "container-2", "container-3"],
-        ) as create, patch.object(
-            MODULE,
-            "publish_threads_container",
+            "auto_publish_threads_text_with_retry",
             side_effect=["post-1", "post-2", "post-3"],
-        ):
+        ) as publish:
             post_ids = MODULE.publish_threads_text("copy", credentials)
 
         self.assertEqual(post_ids, ["post-1", "post-2", "post-3"])
-        self.assertEqual(create.call_args_list[0].args[-1], None)
-        self.assertEqual(create.call_args_list[1].args[-1], "post-1")
-        self.assertEqual(create.call_args_list[2].args[-1], "post-1")
+        self.assertEqual(publish.call_args_list[0].args[-1], None)
+        self.assertEqual(publish.call_args_list[1].args[-1], "post-1")
+        self.assertEqual(publish.call_args_list[2].args[-1], "post-1")
 
     def test_splitter_does_not_leave_english_heading_in_a_short_chunk(self):
         chinese = "中文內容" * 90
@@ -630,10 +639,8 @@ class DailySocialTests(unittest.TestCase):
             MODULE, "split_threads_text", return_value=["first", "second"]
         ), patch.object(
             MODULE,
-            "create_threads_container_with_retry",
-            side_effect=["container-1", RuntimeError("reply failed")],
-        ), patch.object(
-            MODULE, "publish_threads_container", return_value="post-1"
+            "auto_publish_threads_text_with_retry",
+            side_effect=["post-1", RuntimeError("reply failed")],
         ):
             with self.assertRaisesRegex(RuntimeError, "reply failed"):
                 MODULE.publish_threads_text(
@@ -652,6 +659,60 @@ class DailySocialTests(unittest.TestCase):
             MODULE.publication_key(now),
             "social/publications/threads/2026-09-17.json",
         )
+
+    def test_failed_publication_retry_refuses_partial_thread(self):
+        now = datetime(2026, 9, 22, 12, tzinfo=ZoneInfo("America/New_York"))
+        with self.assertRaisesRegex(RuntimeError, "published chunks"):
+            MODULE.retry_failed_threads_publication(
+                now,
+                MODULE.publication_key(now),
+                {
+                    "status": "failed",
+                    "post_ids": ["post-1"],
+                    "published_chunk_count": 1,
+                },
+            )
+
+    def test_failed_publication_retry_reuses_matching_stored_copy(self):
+        now = datetime(2026, 9, 22, 12, tzinfo=ZoneInfo("America/New_York"))
+        shared_text = "Stored bilingual post"
+        existing = {
+            "status": "failed",
+            "updated_at": "2026-09-22T07:00:00-04:00",
+            "content_sha256": hashlib.sha256(
+                shared_text.encode("utf-8")
+            ).hexdigest(),
+            "post_ids": [],
+            "published_chunk_count": 0,
+        }
+        credentials = {
+            "THREADS_ACCESS_TOKEN": "token",
+            "THREADS_USERNAME": "bostonweekendagent",
+        }
+        states = []
+        with patch.object(
+            MODULE,
+            "load_json",
+            return_value={
+                "campaign_id": "2026-09-22",
+                "shared_text": shared_text,
+            },
+        ), patch.object(
+            MODULE, "write_publication_state", side_effect=lambda _, value: states.append(value)
+        ), patch.object(
+            MODULE, "get_threads_credentials", return_value=credentials
+        ), patch.object(
+            MODULE, "refresh_threads_token_if_needed", return_value=credentials
+        ), patch.object(
+            MODULE, "publish_threads_text", return_value=["post-1"]
+        ):
+            result = MODULE.retry_failed_threads_publication(
+                now, MODULE.publication_key(now), existing
+            )
+
+        self.assertEqual(result["threads_publish_status"], "published_retry")
+        self.assertEqual(states[-1]["status"], "published")
+        self.assertEqual(states[-1]["post_ids"], ["post-1"])
 
 
 if __name__ == "__main__":

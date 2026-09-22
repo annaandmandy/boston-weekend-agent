@@ -1001,16 +1001,8 @@ def publish_threads_text(
     for index, chunk in enumerate(chunks, start=1):
         reply_to_id = root_post_id
         try:
-            creation_id = create_threads_container_with_retry(
-                credentials["THREADS_USER_ID"],
-                credentials["THREADS_ACCESS_TOKEN"],
-                chunk,
-                reply_to_id,
-            )
-            post_id = publish_threads_container(
-                credentials["THREADS_USER_ID"],
-                credentials["THREADS_ACCESS_TOKEN"],
-                creation_id,
+            post_id = auto_publish_threads_text_with_retry(
+                chunk, credentials, reply_to_id
             )
         except Exception:
             LOGGER.exception(
@@ -1026,22 +1018,63 @@ def publish_threads_text(
     return post_ids
 
 
-def auto_publish_threads_text(text: str, credentials: dict[str, str]) -> str:
+def auto_publish_threads_text(
+    text: str,
+    credentials: dict[str, str],
+    reply_to_id: str | None = None,
+) -> str:
     """Publish one text post atomically using Meta's text-only API option."""
+    data = {
+        "media_type": "TEXT",
+        "text": text,
+        "auto_publish_text": "true",
+        "access_token": credentials["THREADS_ACCESS_TOKEN"],
+    }
+    if reply_to_id:
+        data["reply_to_id"] = reply_to_id
     response = threads_request_json(
         f"{THREADS_API_BASE}/me/threads",
         method="POST",
-        data={
-            "media_type": "TEXT",
-            "text": text,
-            "auto_publish_text": "true",
-            "access_token": credentials["THREADS_ACCESS_TOKEN"],
-        },
+        data=data,
     )
     post_id = str(response.get("id", ""))
     if not post_id:
         raise RuntimeError("Threads did not return an auto-published post ID")
     return post_id
+
+
+def auto_publish_threads_text_with_retry(
+    text: str,
+    credentials: dict[str, str],
+    reply_to_id: str | None = None,
+) -> str:
+    """Auto-publish text, allowing a new root post time to become replyable."""
+    attempts = THREADS_REPLY_CREATE_ATTEMPTS if reply_to_id else 1
+    if reply_to_id and THREADS_REPLY_SETTLE_SECONDS > 0:
+        time.sleep(THREADS_REPLY_SETTLE_SECONDS)
+
+    for attempt in range(1, attempts + 1):
+        try:
+            return auto_publish_threads_text(text, credentials, reply_to_id)
+        except RuntimeError as error:
+            transient = any(
+                marker in str(error)
+                for marker in ("(code 1)", "(code 2)", "(code 24)", "(code 500)")
+            )
+            if not reply_to_id or not transient or attempt >= attempts:
+                raise
+            delay = THREADS_REPLY_SETTLE_SECONDS * (2 ** (attempt - 1))
+            LOGGER.warning(
+                "Threads reply auto-publish was not ready; retrying in %.1fs "
+                "(attempt %s/%s)",
+                delay,
+                attempt + 1,
+                attempts,
+            )
+            if delay > 0:
+                time.sleep(delay)
+
+    raise RuntimeError("Threads reply auto-publish retries were exhausted")
 
 
 def publication_key(now: datetime) -> str:
@@ -1244,6 +1277,100 @@ def store_campaign(
     return keys
 
 
+def retry_failed_threads_publication(
+    now: datetime,
+    publish_key: str,
+    existing: dict[str, Any],
+) -> dict[str, Any]:
+    """Retry an all-or-nothing failed publication using its stored copy."""
+    post_ids = existing.get("post_ids") or []
+    published_chunk_count = int(existing.get("published_chunk_count") or 0)
+    if existing.get("status") != "failed":
+        raise RuntimeError("Only a failed Threads publication can be retried")
+    if post_ids or published_chunk_count:
+        raise RuntimeError(
+            "Threads publication already has published chunks; refusing retry"
+        )
+
+    campaign = load_json("social/latest.json")
+    expected_campaign_id = now.strftime("%Y-%m-%d")
+    if campaign.get("campaign_id") != expected_campaign_id:
+        raise RuntimeError("Latest social campaign is not today's failed campaign")
+    shared_text = str(campaign.get("shared_text") or "")
+    if not shared_text:
+        raise RuntimeError("Today's social campaign has no stored shared text")
+    content_sha256 = hashlib.sha256(shared_text.encode("utf-8")).hexdigest()
+    if content_sha256 != existing.get("content_sha256"):
+        raise RuntimeError("Stored campaign copy does not match publication state")
+
+    claim = {
+        "campaign_id": expected_campaign_id,
+        "status": "publishing",
+        "updated_at": now.isoformat(),
+        "content_sha256": content_sha256,
+        "retry_of": existing.get("updated_at"),
+    }
+    write_publication_state(publish_key, claim)
+    published_post_ids: list[str] = []
+    chunk_count = len(split_threads_text(shared_text))
+
+    def record_publish_progress(ids: list[str], total: int) -> None:
+        published_post_ids[:] = ids
+        write_publication_state(
+            publish_key,
+            {
+                **claim,
+                "status": "publishing",
+                "updated_at": datetime.now(EASTERN).isoformat(),
+                "post_ids": ids,
+                "published_chunk_count": len(ids),
+                "chunk_count": total,
+            },
+        )
+
+    try:
+        credentials = refresh_threads_token_if_needed(
+            get_threads_credentials(), now
+        )
+        post_ids = publish_threads_text(
+            shared_text,
+            credentials,
+            on_post_published=record_publish_progress,
+        )
+    except Exception as error:
+        write_publication_state(
+            publish_key,
+            {
+                **claim,
+                "status": "failed",
+                "updated_at": datetime.now(EASTERN).isoformat(),
+                "error_type": type(error).__name__,
+                "error_message": str(error)[:500],
+                "post_ids": published_post_ids,
+                "published_chunk_count": len(published_post_ids),
+                "chunk_count": chunk_count,
+            },
+        )
+        raise
+
+    published = {
+        **claim,
+        "status": "published",
+        "updated_at": datetime.now(EASTERN).isoformat(),
+        "post_ids": post_ids,
+        "published_chunk_count": len(post_ids),
+        "chunk_count": chunk_count,
+        "username": credentials["THREADS_USERNAME"],
+    }
+    write_publication_state(publish_key, published)
+    return {
+        "success": True,
+        "generated_at": published["updated_at"],
+        "threads_publish_status": "published_retry",
+        "thread_post_ids": post_ids,
+    }
+
+
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     now = datetime.now(EASTERN)
     if isinstance(event, dict) and event.get("mode") == "introduction":
@@ -1261,6 +1388,10 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                     "threads_publish_status": "already_published",
                     "thread_post_ids": existing.get("post_ids", []),
                 }
+            if isinstance(event, dict) and event.get("retry_failed_publication"):
+                return retry_failed_threads_publication(
+                    now, publish_key, existing
+                )
             raise RuntimeError(
                 f"Threads publication state is {status}; inspect {publish_key} "
                 "before retrying to avoid a duplicate post"
