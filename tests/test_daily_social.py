@@ -570,7 +570,7 @@ class DailySocialTests(unittest.TestCase):
             return_value=["first", "second"],
         ), patch.object(
             MODULE,
-            "create_threads_container",
+            "create_threads_container_with_retry",
             side_effect=["container-1", "container-2"],
         ) as create, patch.object(
             MODULE,
@@ -582,6 +582,56 @@ class DailySocialTests(unittest.TestCase):
         self.assertEqual(post_ids, ["post-1", "post-2"])
         self.assertEqual(create.call_args_list[0].args[-1], None)
         self.assertEqual(create.call_args_list[1].args[-1], "post-1")
+
+    def test_retries_transient_reply_container_errors(self):
+        original_delay = MODULE.THREADS_REPLY_SETTLE_SECONDS
+        original_attempts = MODULE.THREADS_REPLY_CREATE_ATTEMPTS
+        MODULE.THREADS_REPLY_SETTLE_SECONDS = 0
+        MODULE.THREADS_REPLY_CREATE_ATTEMPTS = 3
+        try:
+            with patch.object(
+                MODULE,
+                "create_threads_container",
+                side_effect=[
+                    RuntimeError("Threads API error (code 500)"),
+                    "container-2",
+                ],
+            ) as create:
+                result = MODULE.create_threads_container_with_retry(
+                    "user-1", "token", "English reply", "post-1"
+                )
+        finally:
+            MODULE.THREADS_REPLY_SETTLE_SECONDS = original_delay
+            MODULE.THREADS_REPLY_CREATE_ATTEMPTS = original_attempts
+
+        self.assertEqual(result, "container-2")
+        self.assertEqual(create.call_count, 2)
+
+    def test_reports_each_published_chunk_for_partial_state(self):
+        credentials = {
+            "THREADS_USER_ID": "user-1",
+            "THREADS_ACCESS_TOKEN": "secret-token",
+        }
+        progress = []
+        with patch.object(
+            MODULE, "split_threads_text", return_value=["first", "second"]
+        ), patch.object(
+            MODULE,
+            "create_threads_container_with_retry",
+            side_effect=["container-1", RuntimeError("reply failed")],
+        ), patch.object(
+            MODULE, "publish_threads_container", return_value="post-1"
+        ):
+            with self.assertRaisesRegex(RuntimeError, "reply failed"):
+                MODULE.publish_threads_text(
+                    "copy",
+                    credentials,
+                    on_post_published=lambda ids, total: progress.append(
+                        (ids, total)
+                    ),
+                )
+
+        self.assertEqual(progress, [(["post-1"], 2)])
 
     def test_publication_key_is_one_per_local_day(self):
         now = datetime(2026, 9, 17, 7, tzinfo=ZoneInfo("America/New_York"))
