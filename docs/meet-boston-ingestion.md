@@ -36,8 +36,10 @@ outside the Meet Boston staging prefix.
 
 The workflow runs at 5:00 AM `America/New_York`, one hour before the 6:00 AM AWS
 collector schedule. GitHub cron expressions use UTC, so the workflow declares
-both 09:00 and 10:00 UTC and uses a local-time gate to run only the matching one.
-Manual `workflow_dispatch` runs always bypass the gate.
+both 09:00 and 10:00 UTC and selects the correct expression from the current
+Eastern UTC offset. The gate uses the scheduled expression instead of the runner
+start time because GitHub may delay scheduled jobs. Manual `workflow_dispatch`
+runs always bypass the gate.
 
 Before enabling this schedule, the full manual path was verified: GitHub assumed
 the AWS role through OIDC, wrote both the immutable archive and `latest.json`, and
