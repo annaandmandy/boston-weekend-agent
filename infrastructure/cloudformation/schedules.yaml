@@ -116,8 +116,8 @@ Resources:
     Type: AWS::Scheduler::Schedule
     Properties:
       Name: boston-weekend-thursday-friday-report
-      Description: Publish Thursday preview and refresh it Friday morning.
-      ScheduleExpression: cron(15 7 ? * THU,FRI *)
+      Description: Publish a fresh rolling report every morning, with special Thursday and Friday editions.
+      ScheduleExpression: cron(15 7 * * ? *)
       ScheduleExpressionTimezone: America/New_York
       FlexibleTimeWindow:
         Mode: "OFF"
@@ -125,7 +125,7 @@ Resources:
       Target:
         Arn: !Ref WeekendStateMachineArn
         RoleArn: !GetAtt SchedulerExecutionRole.Arn
-        Input: '{"trigger":"scheduled-weekend-report"}'
+        Input: '{"trigger":"scheduled-daily-report","skip_event_collection":true}'
         DeadLetterConfig:
           Arn: !GetAtt SchedulerDeadLetterQueue.Arn
         RetryPolicy:

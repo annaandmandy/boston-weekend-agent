@@ -16,7 +16,8 @@ production editorial agent。波波不是替活動做關鍵字排序的吉祥物
 Bo is the project's production editorial agent: a cheerful yellow map robot
 that lives in the Boston cloud. Bo semantically ranks verified Greater Boston
 events, explains the decision, and writes a Traditional Chinese and English
-daily note plus a Thursday/Friday weekend letter. Deterministic code still owns
+daily note plus a rolling website letter with richer Thursday/Friday editions.
+Deterministic code still owns
 hard facts such as dates, cancellations, sold-out status, cooldowns, and links.
 
 Bo's core identity is versioned with the Lambda images. Its reviewed long-term
@@ -181,8 +182,10 @@ tests each Lambda independently before changing the production state machine.
 - Activity Like totals use DynamoDB transactional writes so the voter state,
   aggregate count, and immutable action record change together. The feature
   does not call an LLM.
-- Events are collected daily for a ten-day window. The full weekend workflow
-  runs Thursday for an early planning edition and Friday for a refreshed edition.
+- Events are collected daily for a ten-day window. A rolling website report runs
+  every morning, with a Thursday planning edition and a Friday baseline-aware
+  refresh. Weekend editions keep the current day useful and look ahead without
+  asking the LLM to reproduce the complete Activities table.
 - One bilingual social post (Traditional Chinese first, English second) is generated daily
   and reused unchanged for Threads and Xiaohongshu, with a 48-hour event
   cooldown.

@@ -1,7 +1,18 @@
 {
   "Comment": "Boston Weekend Travel Mood Agent workflow",
-  "StartAt": "CollectEvents",
+  "StartAt": "RouteEventCollection",
   "States": {
+    "RouteEventCollection": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.skip_event_collection",
+          "BooleanEquals": true,
+          "Next": "CollectTravelData"
+        }
+      ],
+      "Default": "CollectEvents"
+    },
     "CollectEvents": {
       "Type": "Task",
       "Resource": "${CollectEventsFunctionArn}",
