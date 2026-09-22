@@ -19,7 +19,7 @@ token to assume a role that can only put objects below
    provider with:
    - Provider URL: `https://token.actions.githubusercontent.com`
    - Audience: `sts.amazonaws.com`
-3. Create a role named `boston-weekend-github-meet-boston-ingestion` for Web
+3. Create a role named `boston-weekend-meet-boston-staging-write` for Web
    identity and use
    `infrastructure/iam/github-meet-boston-trust-policy.json` as its trust policy.
 4. Add an inline permissions policy using
@@ -28,19 +28,20 @@ token to assume a role that can only put objects below
 6. In GitHub, open **Settings → Secrets and variables → Actions → Variables** and
    create `MEET_BOSTON_INGEST_ROLE_ARN` with that ARN.
 
-The trust policy accepts only the repository's `main` branch. The permissions
-policy cannot read, delete, or overwrite objects outside the Meet Boston staging
-prefix.
+The trust policy accepts only the repository's immutable GitHub identity and its
+`main` branch. The permissions policy cannot read, delete, or overwrite objects
+outside the Meet Boston staging prefix.
 
-## Activation sequence
+## Schedule and activation
 
-1. Run **Meet Boston ingestion** manually in GitHub Actions.
-2. Confirm both the immutable archive and `latest.json` exist under the staging
-   prefix.
-3. Deploy the collector image containing the staging reader.
-4. Invoke the collector once and confirm `summary.by_source` contains
-   `Meet Boston` with no Meet Boston source failure.
-5. Add the two DST-safe GitHub cron triggers only after the manual path succeeds.
+The workflow runs at 5:00 AM `America/New_York`, one hour before the 6:00 AM AWS
+collector schedule. GitHub cron expressions use UTC, so the workflow declares
+both 09:00 and 10:00 UTC and uses a local-time gate to run only the matching one.
+Manual `workflow_dispatch` runs always bypass the gate.
+
+Before enabling this schedule, the full manual path was verified: GitHub assumed
+the AWS role through OIDC, wrote both the immutable archive and `latest.json`, and
+the deployed collector loaded 30 Meet Boston events from staging.
 
 The collector accepts staging data only when it has schema version `1`, identifies
 the source as `Meet Boston`, contains usable events, and is no more than 30 hours

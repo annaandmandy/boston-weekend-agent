@@ -25,6 +25,12 @@
       "Resource": "arn:aws:s3:::boston-weekend-agent-reports/events/latest.json"
     },
     {
+      "Sid": "ReadMeetBostonLatestStaging",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::boston-weekend-agent-reports/ingestion/meet-boston/latest.json"
+    },
+    {
       "Sid": "WriteEventSnapshots",
       "Effect": "Allow",
       "Action": "s3:PutObject",

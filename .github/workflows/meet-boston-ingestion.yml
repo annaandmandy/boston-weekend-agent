@@ -2,6 +2,11 @@ name: Meet Boston ingestion
 
 on:
   workflow_dispatch:
+  schedule:
+    # GitHub cron uses UTC. Running both UTC hours plus the local-time gate below
+    # keeps this at 5:00 AM America/New_York across daylight-saving changes.
+    - cron: "0 9 * * *"
+    - cron: "0 10 * * *"
 
 permissions:
   contents: read
@@ -15,19 +20,34 @@ jobs:
       AWS_EC2_METADATA_DISABLED: "true"
       AWS_DEFAULT_REGION: us-east-1
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - name: Check local schedule window
+        id: schedule_gate
+        shell: bash
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]] || [[ "$(TZ=America/New_York date +%H)" == "05" ]]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping duplicate UTC schedule outside the 5 AM America/New_York window."
+          fi
+      - if: steps.schedule_gate.outputs.should_run == 'true'
+        uses: actions/checkout@v4
+      - if: steps.schedule_gate.outputs.should_run == 'true'
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
       - name: Install ingestion dependencies
+        if: steps.schedule_gate.outputs.should_run == 'true'
         run: pip install -r services/collect-events/requirements.txt boto3
       - name: Configure short-lived AWS credentials
+        if: steps.schedule_gate.outputs.should_run == 'true'
         uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: ${{ vars.MEET_BOSTON_INGEST_ROLE_ARN }}
           aws-region: us-east-1
       - name: Fetch and stage Meet Boston events
+        if: steps.schedule_gate.outputs.should_run == 'true'
         run: >-
           python scripts/ingest_meet_boston.py
           --bucket boston-weekend-agent-reports
