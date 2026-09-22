@@ -2,6 +2,9 @@ name: Meet Boston egress probe
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - probe/meet-boston-egress
 
 permissions:
   contents: read
