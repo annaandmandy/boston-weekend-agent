@@ -46,6 +46,7 @@
         "arn:aws:s3:::boston-weekend-agent-reports/events/latest.json",
         "arn:aws:s3:::boston-weekend-agent-reports/agent/bobo-memory.json",
         "arn:aws:s3:::boston-weekend-agent-reports/social/history.json",
+        "arn:aws:s3:::boston-weekend-agent-reports/social/latest.json",
         "arn:aws:s3:::boston-weekend-agent-reports/social/publications/threads/*"
       ]
     },
