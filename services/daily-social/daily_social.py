@@ -781,18 +781,57 @@ def generate_content(
         }
     )
     responses = [response]
+    contract_warnings: list[str] = []
+    if EMOJI_PATTERN.search(str(response.content)):
+        contract_warnings.append("emoji_removed_from_draft")
     try:
-        content = parse_model_json(response.content)
-        validate_contextual_kaomoji(content)
+        content = parse_model_json(response.content, sanitize_emoji=True)
     except (ValueError, json.JSONDecodeError) as error:
-        LOGGER.warning("Retrying social format/voice contract: %s", error)
+        LOGGER.warning("Retrying invalid social JSON/schema once: %s", error)
         repaired = (build_kaomoji_repair_prompt() | model).invoke(
             {"draft_json": str(response.content)}
         )
         responses.append(repaired)
         content = parse_model_json(repaired.content, sanitize_emoji=True)
-        validate_contextual_kaomoji(content)
-
+        try:
+            validate_contextual_kaomoji(content)
+        except ValueError as validation_error:
+            contract_warnings.append("kaomoji_contract_unmet_after_repair")
+            LOGGER.warning(
+                "Publishing after one repair despite kaomoji contract: %s",
+                validation_error,
+            )
+    else:
+        try:
+            validate_contextual_kaomoji(content)
+        except ValueError as error:
+            LOGGER.warning("Retrying kaomoji contract once: %s", error)
+            repaired = (build_kaomoji_repair_prompt() | model).invoke(
+                {"draft_json": str(response.content)}
+            )
+            responses.append(repaired)
+            try:
+                repaired_content = parse_model_json(
+                    repaired.content, sanitize_emoji=True
+                )
+            except (ValueError, json.JSONDecodeError) as repair_error:
+                contract_warnings.append("kaomoji_repair_invalid_original_used")
+                LOGGER.warning(
+                    "Publishing original draft after invalid kaomoji repair: %s",
+                    repair_error,
+                )
+            else:
+                content = repaired_content
+                try:
+                    validate_contextual_kaomoji(content)
+                except ValueError as validation_error:
+                    contract_warnings.append(
+                        "kaomoji_contract_unmet_after_repair"
+                    )
+                    LOGGER.warning(
+                        "Publishing after one repair despite kaomoji contract: %s",
+                        validation_error,
+                    )
     stages = []
     for index, item in enumerate(responses, start=1):
         usage = getattr(item, "usage_metadata", None) or getattr(
@@ -800,7 +839,7 @@ def generate_content(
         ).get("token_usage", {})
         stages.append(
             {
-                "stage": "draft" if index == 1 else "kaomoji-repair",
+                "stage": "draft" if index == 1 else "format-or-kaomoji-repair",
                 "token_usage": usage or {},
             }
         )
@@ -814,11 +853,12 @@ def generate_content(
     }
     return content, {
         "model": OPENAI_MODEL,
-        "prompt_version": "bobo-social-story-v7-language-first-splitting",
+        "prompt_version": "bobo-social-story-v8-nonblocking-voice",
         "openai_call_count": len(responses),
         "retried": len(responses) > 1,
         "stages": stages,
         "token_usage": token_usage,
+        "contract_warnings": contract_warnings,
     }
 
 

@@ -36,3 +36,7 @@
 
 可執行設定以 `services/daily-social/persona.json` 為準，更新角色或表情庫時需增加
 persona version，並執行完整測試。
+
+每日社群生成會直接移除模型意外輸出的 emoji。內文顏文字不足時只允許一次
+修復呼叫；修復後仍不足或修復回傳無效格式時，保留最後一份可解析內容繼續
+發布並記錄 warning，不讓裝飾性的 voice contract 阻擋每日貼文。
