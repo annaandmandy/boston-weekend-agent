@@ -292,15 +292,23 @@ class DailySocialTests(unittest.TestCase):
         self.assertNotIn("#unused", posts[1])
         self.assertTrue(all(len(post) <= 500 for post in posts))
 
-    def test_two_post_contract_rejects_oversize_language(self):
+    def test_oversize_language_splits_without_mixing_languages(self):
         content = {
             "zh": {"title": "今天去哪", "body": "很長" * 250},
-            "en": {"title": "Boston today", "body": "Short copy."},
+            "en": {"title": "Boston today", "body": "Long copy. " * 100},
             "hashtags": [],
         }
 
-        with self.assertRaisesRegex(ValueError, "exceed the 500-character limit"):
-            MODULE.validate_threads_posts(content)
+        zh_text, en_text = MODULE.render_language_texts(content)
+        posts = MODULE.validate_threads_posts(content)
+
+        expected_zh = MODULE.split_threads_text(zh_text)
+        expected_en = MODULE.split_threads_text(en_text)
+        self.assertEqual(posts, expected_zh + expected_en)
+        self.assertGreater(len(posts), 2)
+        self.assertTrue(all(0 < len(post) <= 500 for post in posts))
+        self.assertTrue(all("Boston today" not in post for post in expected_zh))
+        self.assertTrue(all("今天去哪" not in post for post in expected_en))
 
     def test_parses_structured_bilingual_content(self):
         content = MODULE.parse_model_json(
