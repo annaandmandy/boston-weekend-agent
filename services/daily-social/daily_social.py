@@ -42,7 +42,6 @@ THREADS_PUBLISH_ENABLED = os.environ.get(
 ).lower() in {"1", "true", "yes"}
 THREADS_API_BASE = "https://graph.threads.net/v1.0"
 THREADS_MAX_POST_LENGTH = 500
-THREADS_LENGTH_CHECK_MOOD = "⌖ˎˊ˗ 〔˶ᵔ ᵕ ᵔ˶〕"
 THREADS_REPLY_SETTLE_SECONDS = float(
     os.environ.get("THREADS_REPLY_SETTLE_SECONDS", "2")
 )
@@ -785,7 +784,6 @@ def generate_content(
     try:
         content = parse_model_json(response.content)
         validate_contextual_kaomoji(content)
-        validate_threads_posts(content, THREADS_LENGTH_CHECK_MOOD)
     except (ValueError, json.JSONDecodeError) as error:
         LOGGER.warning("Retrying social format/voice contract: %s", error)
         repaired = (build_kaomoji_repair_prompt() | model).invoke(
@@ -794,7 +792,6 @@ def generate_content(
         responses.append(repaired)
         content = parse_model_json(repaired.content, sanitize_emoji=True)
         validate_contextual_kaomoji(content)
-        validate_threads_posts(content, THREADS_LENGTH_CHECK_MOOD)
 
     stages = []
     for index, item in enumerate(responses, start=1):
@@ -817,7 +814,7 @@ def generate_content(
     }
     return content, {
         "model": OPENAI_MODEL,
-        "prompt_version": "bobo-social-story-v6-two-post-contract",
+        "prompt_version": "bobo-social-story-v7-language-first-splitting",
         "openai_call_count": len(responses),
         "retried": len(responses) > 1,
         "stages": stages,
@@ -847,15 +844,14 @@ def select_kaomoji(events: list[dict[str, Any]], now: datetime) -> str:
 def render_shared_text(
     content: dict[str, Any], mood_kaomoji: str | None = None
 ) -> str:
-    return "\n\n—— English ——\n\n".join(
-        render_threads_posts(content, mood_kaomoji)
-    )
+    zh_text, en_text = render_language_texts(content, mood_kaomoji)
+    return f"{zh_text}\n\n—— English ——\n\n{en_text}"
 
 
-def render_threads_posts(
+def render_language_texts(
     content: dict[str, Any], mood_kaomoji: str | None = None
-) -> list[str]:
-    """Render exactly one Traditional Chinese post and one English reply."""
+) -> tuple[str, str]:
+    """Render complete Traditional Chinese and English editions separately."""
     persona = load_persona()
     hashtags = " ".join(
         f"#{tag}" for tag in content["hashtags"][:3]
@@ -877,21 +873,25 @@ def render_threads_posts(
     if hashtags:
         en_parts.append(hashtags)
     en_parts.append(persona["signoff"])
-    return [zh_post, "\n\n".join(en_parts).strip()]
+    return zh_post, "\n\n".join(en_parts).strip()
+
+
+def render_threads_posts(
+    content: dict[str, Any], mood_kaomoji: str | None = None
+) -> list[str]:
+    """Split each language independently only when Threads requires it."""
+    zh_text, en_text = render_language_texts(content, mood_kaomoji)
+    return split_threads_text(zh_text) + split_threads_text(en_text)
 
 
 def validate_threads_posts(
     content: dict[str, Any], mood_kaomoji: str | None = None
 ) -> list[str]:
     posts = render_threads_posts(content, mood_kaomoji)
-    if len(posts) != 2:
-        raise ValueError("Threads content must render as exactly two posts")
-    lengths = [len(post) for post in posts]
-    if any(length > THREADS_MAX_POST_LENGTH for length in lengths):
-        raise ValueError(
-            "Bilingual Threads posts exceed the 500-character limit: "
-            f"zh={lengths[0]}, en={lengths[1]}"
-        )
+    if not posts or any(
+        not post or len(post) > THREADS_MAX_POST_LENGTH for post in posts
+    ):
+        raise ValueError("Rendered Threads posts violate the platform limit")
     return posts
 
 
@@ -1369,7 +1369,7 @@ def retry_failed_threads_publication(
     write_publication_state(publish_key, claim)
     published_post_ids: list[str] = []
     stored_posts = campaign.get("thread_posts")
-    if isinstance(stored_posts, list) and len(stored_posts) == 2:
+    if isinstance(stored_posts, list) and stored_posts:
         thread_posts = [str(post) for post in stored_posts]
         if any(
             not post or len(post) > THREADS_MAX_POST_LENGTH
