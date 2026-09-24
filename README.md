@@ -3,6 +3,25 @@
 A serverless AWS workflow that collects upcoming Boston events, combines them
 with weather context, and generates a concise weekend guide with an LLM.
 
+## Start here for the AWS walkthrough
+
+Preparing to learn, rebuild, or explain the project from scratch? Read the
+**[AWS interview learning guide](docs/aws-interview-guide.md)**. It includes:
+
+- the end-to-end architecture and daily data flow;
+- why the project uses Lambda, ECR, S3, Step Functions, and EventBridge
+  Scheduler;
+- copy-paste Docker build, ECR push, Lambda update, rollback, and verification
+  commands;
+- CLI and Console setup for IAM, Secrets Manager, Step Functions, schedules,
+  CloudWatch, DynamoDB, and API Gateway;
+- the feedback table data model and HTTP routes;
+- production troubleshooting commands and speed-interview questions.
+
+The short deployment checklist remains in
+[`docs/deployment.md`](docs/deployment.md); the interview guide explains why
+each step exists and how the services connect.
+
 ## Meet Bo / 認識波波 
 Threads([`@bostonweekendagent`](https://www.threads.com/@bostonweekendagent))
 
@@ -57,7 +76,7 @@ AWS Step Functions
         `--> Report Lambda
                +-- Secrets Manager
                +-- OpenAI API
-               `-- S3 reports/weekend_summary.txt
+               `-- S3 reports/weekend_summary.json + .txt
 
 Daily social Lambda
         +-- Reads the same normalized event snapshot
@@ -94,6 +113,7 @@ infrastructure/
   step-functions/       Target state-machine definition
   cloudformation/       Timezone-aware EventBridge Scheduler resources
 docs/
+  aws-interview-guide.md Complete from-zero AWS and interview walkthrough
   deployment.md         Manual deployment and verification procedure
   persona.md            Voice, editorial style, and kaomoji identity for Bo
   recommendation-scoring.md  Explainable BU-centered event ranking

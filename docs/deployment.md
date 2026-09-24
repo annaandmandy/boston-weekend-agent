@@ -103,7 +103,7 @@ Keep the report bucket private. The website reads only the current report
 through a CloudFront distribution with an S3 Origin Access Control (OAC):
 
 ```text
-Browser -> CloudFront -> reports/weekend_summary.txt
+Browser -> CloudFront -> reports/weekend_summary.json
 ```
 
 The production distribution is `EBSSO01S4DVXI` at
@@ -112,10 +112,11 @@ new daily reports are visible immediately, plus the managed
 `SimpleCORS` response headers policy for browser access.
 
 Apply `infrastructure/cloudfront/report-bucket-policy.json` after replacing
-`${CLOUDFRONT_DISTRIBUTION_ARN}`. The S3 resource must remain the single exact
-`reports/weekend_summary.txt` object; do not widen it to `reports/*` or the
-whole bucket. Verify the report path returns HTTP 200 and paths under `events/`,
-`social/`, and `analytics/` return HTTP 403 through the distribution.
+`${CLOUDFRONT_DISTRIBUTION_ARN}`. The S3 resources must remain the two exact
+`reports/weekend_summary.json` and `reports/weekend_summary.txt` objects; do not
+widen them to `reports/*` or the whole bucket. Verify both report paths return
+HTTP 200 and paths under `events/`, `social/`, and `analytics/` return HTTP 403
+through the distribution.
 
 ## Build the daily social generator
 
@@ -285,7 +286,7 @@ details.
 2. Inspect CloudWatch Logs.
 3. Check the `LastModified` metadata for `events/latest.json`.
 4. Invoke the report generator directly.
-5. Check `reports/weekend_summary.txt`.
+5. Check `reports/weekend_summary.json` and `reports/weekend_summary.txt`.
 6. Update the state machine only after both functions pass independently.
 7. Start one manual state-machine execution.
 8. Confirm the Thursday run writes a weekend baseline and the Friday run compares
