@@ -196,8 +196,9 @@ tests each Lambda independently before changing the production state machine.
   its copy exceeds the platform's 500-character limit.
 - Both social copy and weekend letters keep Bo's fixed opening and signoff while
   placing varied contextual kaomoji inside the prose. The normal OpenAI call
-  count is unchanged; a failed voice contract triggers at most one auditable
-  repair call.
+  count is unchanged; emoji are removed deterministically, and a failed kaomoji
+  contract triggers at most one auditable repair call before publishing the
+  last parseable draft.
 - Bo's first Threads post uses a dedicated zero-LLM introduction mode with a
   separate idempotency key. Preview it with `{"mode":"introduction"}`; actual
   publication additionally requires `{"mode":"introduction","publish":true}`
