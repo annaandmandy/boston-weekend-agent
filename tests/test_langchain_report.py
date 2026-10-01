@@ -3,6 +3,7 @@ import pathlib
 import sys
 import unittest
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
@@ -161,6 +162,74 @@ class LangChainReportTests(unittest.TestCase):
         )
         self.assertEqual(parsed["zh"]["title"], "週末來信")
         self.assertEqual(parsed["en"]["body"], "It is 68°F.")
+
+    def test_report_contract_repairs_malformed_json_once(self):
+        repaired_content = __import__("json").dumps(
+            {
+                "zh": {
+                    "title": "週末來信",
+                    "body": "一起出門 〔•̀ᴗ•́〕و，也看看展覽 (≧▽≦)。",
+                },
+                "en": {
+                    "title": "Weekend Letter",
+                    "body": "Let's go 〔´ᴗ`〕～ and explore together (•̀ᴗ•́).",
+                },
+            },
+            ensure_ascii=False,
+        )
+        repair = MagicMock(
+            return_value=SimpleNamespace(
+                content=repaired_content,
+                usage_metadata={"total_tokens": 42},
+            )
+        )
+
+        parsed, attempts = MODULE.parse_report_with_one_repair(
+            SimpleNamespace(content='{"zh":{"title":"broken"'),
+            repair,
+        )
+
+        repair.assert_called_once_with('{"zh":{"title":"broken"')
+        self.assertEqual(parsed["en"]["title"], "Weekend Letter")
+        self.assertEqual([stage for stage, _ in attempts], ["draft", "contract-repair"])
+
+    def test_report_contract_does_not_repair_valid_output(self):
+        content = __import__("json").dumps(
+            {
+                "zh": {
+                    "title": "週末來信",
+                    "body": "一起出門 〔•̀ᴗ•́〕و，也看看展覽 (≧▽≦)。",
+                },
+                "en": {
+                    "title": "Weekend Letter",
+                    "body": "Let's go 〔´ᴗ`〕～ and explore together (•̀ᴗ•́).",
+                },
+            },
+            ensure_ascii=False,
+        )
+        repair = MagicMock()
+
+        parsed, attempts = MODULE.parse_report_with_one_repair(
+            SimpleNamespace(content=content),
+            repair,
+        )
+
+        repair.assert_not_called()
+        self.assertEqual(parsed["zh"]["title"], "週末來信")
+        self.assertEqual([stage for stage, _ in attempts], ["draft"])
+
+    def test_report_contract_fails_after_one_invalid_repair(self):
+        repair = MagicMock(
+            return_value=SimpleNamespace(content='{"zh": invalid again')
+        )
+
+        with self.assertRaises(__import__("json").JSONDecodeError):
+            MODULE.parse_report_with_one_repair(
+                SimpleNamespace(content='{"zh": invalid'),
+                repair,
+            )
+
+        repair.assert_called_once()
 
     def test_converts_celsius_weather_text_to_fahrenheit(self):
         self.assertEqual(

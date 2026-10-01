@@ -10,7 +10,7 @@ import re
 from datetime import date, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 import boto3
@@ -24,7 +24,7 @@ BUCKET_NAME = os.environ.get("REPORT_BUCKET", "boston-weekend-agent-reports")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-5.6-luna")
 OPENAI_REASONING_EFFORT = os.environ.get("OPENAI_REASONING_EFFORT", "none")
 PROMPT_VERSION = os.environ.get(
-    "REPORT_PROMPT_VERSION", "v4.0-daily-rolling-editions"
+    "REPORT_PROMPT_VERSION", "v4.1-report-contract-repair"
 )
 RANKING_PROMPT_VERSION = "ai-global-top-10-v2"
 BOBO_MEMORY_KEY = os.environ.get("BOBO_MEMORY_KEY", "agent/bobo-memory.json")
@@ -969,6 +969,8 @@ def parse_bilingual_report(content: Any) -> dict[str, dict[str, str]]:
         r"^```(?:json)?\s*|\s*```$", "", str(content).strip(), flags=re.I
     )
     payload = json.loads(text)
+    if not isinstance(payload, dict):
+        raise ValueError("Report response root must be a JSON object")
     parsed: dict[str, dict[str, str]] = {}
     for language in ("zh", "en"):
         section = payload.get(language)
@@ -1002,18 +1004,20 @@ def validate_contextual_kaomoji(
             )
 
 
-def build_kaomoji_repair_prompt():
+def build_report_contract_repair_prompt():
     from langchain_core.prompts import ChatPromptTemplate
 
     return ChatPromptTemplate.from_messages(
         [
             (
                 "system",
-                """You are editing a bilingual Boston weekend letter written by
-波波 Bo. Return strict JSON with exactly `zh` and `en`, each containing exactly
-`title` and `body` strings. Preserve every fact, event, date, temperature, URL,
-heading, language, and overall meaning from the draft. Do not add or remove an
-event. Do not add a signature or Unicode emoji.
+                """You are repairing a bilingual Boston weekend letter written by
+波波 Bo. The draft may contain invalid JSON syntax, invalid string escaping, a
+missing language field, or an invalid conversational-voice contract. Return
+strict valid JSON with exactly `zh` and `en`, each containing exactly `title`
+and `body` strings. Preserve every recoverable fact, event, date, temperature,
+URL, heading, language, and overall meaning from the draft. Do not invent facts
+or add or remove an event. Do not add a signature or Unicode emoji.
 
 Repair only the conversational voice: each body must contain 2-4 different
 kaomoji naturally inside sentences at genuine emotional turns. They must not be
@@ -1021,9 +1025,29 @@ standalone lines, paragraph prefixes, or titles. Vary their shapes; examples of
 the range include 〔•̀ᴗ•́〕و, \\(≧▽≦)/, and (((o(*ﾟ▽ﾟ*)o))). Keep natural Taiwan
 Traditional Chinese in `zh` and natural English in `en`.""",
             ),
-            ("human", "Repair this draft JSON:\n{draft_json}"),
+            ("human", "Repair this draft as strict JSON:\n{draft_text}"),
         ]
     )
+
+
+def parse_report_with_one_repair(
+    initial_result: Any,
+    repair_call: Callable[[str], Any],
+) -> tuple[dict[str, dict[str, str]], list[tuple[str, Any]]]:
+    """Validate the report contract and spend at most one repair call."""
+    writing_results = [("draft", initial_result)]
+    try:
+        parsed_report = parse_bilingual_report(initial_result.content)
+        validate_contextual_kaomoji(parsed_report)
+        return parsed_report, writing_results
+    except (TypeError, ValueError) as error:
+        LOGGER.warning("Retrying report output contract: %s", error)
+
+    repaired = repair_call(str(initial_result.content))
+    writing_results.append(("contract-repair", repaired))
+    parsed_report = parse_bilingual_report(repaired.content)
+    validate_contextual_kaomoji(parsed_report)
+    return parsed_report, writing_results
 
 
 def select_report_kaomoji(events: list[dict[str, Any]], now: datetime) -> str:
@@ -1103,25 +1127,19 @@ def generate_report(
         "event_changes": format_event_changes(changes_data or {}),
     }
     result = (build_prompt() | model).invoke(prompt_values)
-    writing_results = [result]
-    parsed_report = parse_bilingual_report(result.content)
-    try:
-        validate_contextual_kaomoji(parsed_report)
-    except ValueError as error:
-        LOGGER.warning("Retrying report voice contract: %s", error)
-        repaired = (build_kaomoji_repair_prompt() | model).invoke(
-            {"draft_json": json.dumps(parsed_report, ensure_ascii=False)}
-        )
-        writing_results.append(repaired)
-        parsed_report = parse_bilingual_report(repaired.content)
-        validate_contextual_kaomoji(parsed_report)
+    parsed_report, writing_results = parse_report_with_one_repair(
+        result,
+        lambda draft_text: (build_report_contract_repair_prompt() | model).invoke(
+            {"draft_text": draft_text}
+        ),
+    )
 
     mood_kaomoji = select_report_kaomoji(events, now)
     report_zh = finalize_language_report(parsed_report["zh"], mood_kaomoji)
     report_en = finalize_language_report(parsed_report["en"], mood_kaomoji)
     report = f"{report_zh}\n\n—— English ——\n\n{report_en}"
     writing_stages = []
-    for index, writing_result in enumerate(writing_results, start=1):
+    for stage, writing_result in writing_results:
         usage_metadata = getattr(writing_result, "usage_metadata", None)
         if not usage_metadata:
             usage_metadata = getattr(writing_result, "response_metadata", {}).get(
@@ -1129,7 +1147,7 @@ def generate_report(
             )
         writing_stages.append(
             {
-                "stage": "draft" if index == 1 else "kaomoji-repair",
+                "stage": stage,
                 "token_usage": usage_metadata or {},
             }
         )
