@@ -34,8 +34,8 @@ production editorial agent。波波不是替活動做關鍵字排序的吉祥物
 
 Bo is the project's production editorial agent: a cheerful yellow map robot
 that lives in the Boston cloud. Bo semantically ranks verified Greater Boston
-events, explains the decision, and writes a Traditional Chinese and English
-daily note plus a rolling website letter with richer Thursday/Friday editions.
+events, explains the decision, and writes a Traditional Chinese daily Threads
+note plus a bilingual rolling website letter with richer Thursday/Friday editions.
 Deterministic code still owns
 hard facts such as dates, cancellations, sold-out status, cooldowns, and links.
 
@@ -80,9 +80,10 @@ AWS Step Functions
 
 Daily social Lambda
         +-- Reads the same normalized event snapshot
+        +-- Reads a fresh Boston weather snapshot for the diary header
         +-- Enforces a 48-hour event cooldown
-        +-- Calls OpenAI once for semantic ranking and once for shared copy
-        +-- Validates Bo's bilingual voice; one repair call is allowed if needed
+        +-- Calls OpenAI once for semantic ranking and once for a short zh-TW opening
+        +-- Renders verified event bullets and direct-link replies deterministically
         +-- Loads Bo's versioned persona and reviewed S3 memory
         +-- S3 social/latest.json and social/latest.txt
         `-- Threads API (optional guarded auto-publish)
@@ -210,15 +211,15 @@ tests each Lambda independently before changing the production state machine.
   feed currently blocks the Lambda egress path. GitHub assumes a narrowly scoped
   AWS role through OIDC, writes a versioned S3 staging snapshot, and the collector
   accepts it only while fresh. See `docs/meet-boston-ingestion.md`.
-- One bilingual social edition is generated daily and reused for Threads and
-  Xiaohongshu, with a 48-hour event cooldown. Threads separates Traditional
-  Chinese and English first, then splits either language independently only when
-  its copy exceeds the platform's 500-character limit.
-- Both social copy and weekend letters keep Bo's fixed opening and signoff while
-  placing varied contextual kaomoji inside the prose. The normal OpenAI call
-  count is unchanged; emoji are removed deterministically, and a failed kaomoji
-  contract triggers at most one auditable repair call before publishing the
-  last parseable draft.
+- One Traditional Chinese social edition is generated daily for Boston's
+  Taiwanese community, with a 48-hour event cooldown. Its root post uses a
+  diary-style date/time/weather header and at most three deterministic event
+  bullets; direct source URLs are published as replies. English social copy is
+  paused, while the website report remains bilingual.
+- Social copy and weekend letters keep Bo's fixed signoff. The daily social LLM
+  writes only a short opening; application code owns the diary header, kaomoji,
+  event facts, links, and signature. Invalid opening JSON receives at most one
+  auditable repair call.
 - Bo's first Threads post uses a dedicated zero-LLM introduction mode with a
   separate idempotency key. Preview it with `{"mode":"introduction"}`; actual
   publication additionally requires `{"mode":"introduction","publish":true}`

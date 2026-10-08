@@ -1,4 +1,4 @@
-"""Generate one shared bilingual daily post for Threads and Xiaohongshu."""
+"""Generate one zh-TW diary-style daily post and source-link replies."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -35,7 +35,12 @@ WEBSITE_URL = os.environ.get(
     "WEBSITE_URL", "https://www.hsiangyuhuang.com/weekend_report"
 )
 COOLDOWN_HOURS = int(os.environ.get("SOCIAL_COOLDOWN_HOURS", "48"))
-MAX_SOCIAL_EVENTS = int(os.environ.get("MAX_SOCIAL_EVENTS", "5"))
+MAX_SOCIAL_EVENTS = max(
+    1, min(int(os.environ.get("MAX_SOCIAL_EVENTS", "3")), 3)
+)
+WEATHER_KEY = os.environ.get("WEATHER_KEY", "weather/latest.json")
+WEATHER_CITY = os.environ.get("WEATHER_CITY", "Boston,MA,US")
+WEATHER_MAX_AGE_HOURS = int(os.environ.get("WEATHER_MAX_AGE_HOURS", "26"))
 THREADS_SECRET_ID = os.environ.get("THREADS_SECRET_ID", "")
 THREADS_PUBLISH_ENABLED = os.environ.get(
     "THREADS_PUBLISH_ENABLED", "false"
@@ -223,6 +228,89 @@ def load_json(key: str, default: dict[str, Any] | None = None) -> dict[str, Any]
             return default or {}
         raise
     return json.loads(response["Body"].read().decode("utf-8"))
+
+
+def _parse_weather_timestamp(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    # The legacy weather pipeline writes a naive UTC timestamp.
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _weather_condition_zh(forecasts: list[dict[str, Any]]) -> str:
+    conditions = [
+        str(item.get("condition") or "").strip().lower() for item in forecasts
+    ]
+    maximum_rain = max(
+        (float(item.get("pop") or 0) for item in forecasts), default=0
+    )
+    if any("snow" in condition for condition in conditions):
+        return "可能有雪"
+    if any("thunder" in condition for condition in conditions):
+        return "可能有雷雨"
+    rainy = sum(
+        any(marker in condition for marker in ("rain", "drizzle"))
+        for condition in conditions
+    )
+    if maximum_rain >= 40 or rainy >= max(1, len(forecasts) // 2):
+        return "有雨機會"
+    if rainy:
+        return "局部短暫雨"
+    clear = sum("clear" in condition for condition in conditions)
+    cloudy = sum("cloud" in condition for condition in conditions)
+    if clear > cloudy:
+        return "晴"
+    if cloudy:
+        return "多雲"
+    return "天氣資料更新中"
+
+
+def load_daily_weather(now: datetime) -> dict[str, Any] | None:
+    """Return a fresh, verified Boston forecast for the local calendar day."""
+    weather_data = load_json(WEATHER_KEY, default={})
+    generated_at = _parse_weather_timestamp(weather_data.get("timestamp"))
+    if generated_at is None:
+        return None
+    age = now.astimezone(timezone.utc) - generated_at
+    if age < timedelta(hours=-1) or age > timedelta(hours=WEATHER_MAX_AGE_HOURS):
+        return None
+
+    city_forecasts = (weather_data.get("weather") or {}).get(WEATHER_CITY)
+    if not isinstance(city_forecasts, list):
+        return None
+    date_prefix = now.strftime("%Y-%m-%d")
+    forecasts = [
+        item
+        for item in city_forecasts
+        if isinstance(item, dict)
+        and str(item.get("time") or "").startswith(date_prefix)
+    ]
+    temperatures = [
+        float(item["temp"])
+        for item in forecasts
+        if isinstance(item.get("temp"), (int, float))
+    ]
+    if not forecasts or not temperatures:
+        return None
+
+    rain_chance = max(
+        (float(item.get("pop") or 0) for item in forecasts), default=0
+    )
+    return {
+        "city": "Boston",
+        "date": date_prefix,
+        "condition_zh": _weather_condition_zh(forecasts),
+        "temp_low_c": round(min(temperatures)),
+        "temp_high_c": round(max(temperatures)),
+        "rain_chance_max": round(rain_chance),
+        "source_timestamp": generated_at.isoformat(),
+    }
 
 
 def _fallback_event_id(event: dict[str, Any]) -> str:
@@ -630,53 +718,37 @@ Voice: {voice}
 Editorial style: {content_style}
 Never do any of the following: {forbidden}
 
-You write one shared bilingual social post that will be used
-unchanged on both Threads and Xiaohongshu. Use only facts supplied below. Never
-invent dates, times, prices, venues, availability, or cancellation status.
+Write only the short diary-style opening for one Traditional Chinese Threads
+post aimed at Taiwanese people in Boston. The application deterministically adds
+the date, weekday, time, verified weather summary, event bullets, source links,
+and signature. Never repeat or rewrite those sections.
 
-Write the Traditional Chinese version first, using natural Taiwan-style wording,
-and a natural English version second. Never use Simplified Chinese characters or
-Mainland-China-specific wording. Both versions must describe the same selected
-activities and must not introduce facts that appear in only one language. Write
-each version as a conversational tiny story from a Boston friend: open with a
-small everyday scene, mood, or question, use 2-3 short paragraphs, and weave the
-activities into possible ways the day could unfold. Avoid a compressed summary
-or a repetitive numbered list. Keep the Chinese title and body together under
-330 Traditional Chinese characters. Keep the English title and body together
-under 380 characters, not words. These are strict limits because each language
-must fit in one Threads post after the report URL, hashtags, and signature are
-added.
+Use natural Taiwan Traditional Chinese, never Simplified Chinese or
+Mainland-China-specific wording. Write one or two short conversational sentences
+under 90 Traditional Chinese characters total. Sound like a local friend, not a
+tourism bureau. You may mention a practical weather reminder only when it is
+directly supported by the supplied verified weather context. If weather is
+unavailable, use a small observation grounded in the supplied event names or
+event count instead. Never invent attendance, personal experience, weather,
+dates, times, prices, venues, availability, or cancellation status.
 
-Mention only the 2-3 strongest activities, explain briefly why they fit the day's
-story, and do not include individual event URLs. The application adds the weekend
-report URL where readers can open every activity link. Do not use Markdown. Do not
-claim that an event is recommended from personal experience. Never use Unicode
-emoji. In each language body, naturally place 2-3 varied kaomoji inside sentences
-at real emotional turns: delight at a rare find, playful indecision, weather
-relief, or a cautious aside when details are incomplete. Treat them like emotional
-punctuation, not standalone decorations or paragraph prefixes. Include at most
-one conversational parenthetical aside per language. Do not put kaomoji in titles
-and do not generate a signature; the application separately preserves Bo's
-fixed top expression and fixed signed expression.
+Do not list or summarize the events. Do not include a title, URL, hashtag,
+signature, Unicode emoji, or kaomoji; the application adds the fixed structure
+and Bo's deterministic kaomoji separately. Do not use Markdown.
 
-The Traditional Chinese body may occasionally use one short Taiwan-style zhuyin
-character or playful internet spelling when it arises naturally in the sentence.
-This is optional flavor, not a quota: never force it, repeat it mechanically, or
-let it reduce clarity. Do not imitate or translate this typography in English.
-
-Return strict JSON with exactly these top-level keys: zh, en, hashtags. `zh` and
-`en` must each contain exactly `title` and `body` strings. `hashtags` must be an
-array of at most three language-neutral or bilingual strings without leading #
-characters.""",
+Return strict JSON with exactly these top-level keys: intro, hashtags. `intro`
+must be a string. `hashtags` must be an array of at most two Traditional Chinese
+or language-neutral strings without leading # characters.""",
             ),
             (
                 "human",
                 """Today is {date} ({day_name}) in Boston.
 
-Verified event candidates:
-{events}
+Verified weather context:
+{weather_context}
 
-Weekend report: {website_url}
+Verified selected events (for safe context only; do not list them):
+{events}
 """,
             ),
         ]
@@ -692,27 +764,23 @@ def parse_model_json(
     # Preserve raw kaomoji backslashes while making them valid JSON escapes.
     text = re.sub(r'\\(?!["\\/bfnrtu])', r"\\\\", text)
     result = json.loads(text)
-    for language in ("zh", "en"):
-        localized = result.get(language)
-        if not isinstance(localized, dict) or not isinstance(
-            localized.get("title"), str
-        ) or not isinstance(localized.get("body"), str):
-            raise ValueError(
-                f"Model response did not contain {language} title and body strings"
-            )
+    if set(result) != {"intro", "hashtags"}:
+        raise ValueError("Model response must contain exactly intro and hashtags")
+    if not isinstance(result.get("intro"), str) or not result["intro"].strip():
+        raise ValueError("Model response did not contain a non-empty intro string")
+    if len(result["intro"].strip()) > 90:
+        raise ValueError("Model response intro exceeded 90 characters")
+    if extract_contextual_kaomoji(result["intro"]):
+        raise ValueError("Model response intro contained application-owned kaomoji")
     hashtags = result.get("hashtags")
-    if not isinstance(hashtags, list):
-        raise ValueError("Model response did not contain a hashtags array")
+    if not isinstance(hashtags, list) or len(hashtags) > 2:
+        raise ValueError("Model response hashtags must be an array of at most two")
     result["hashtags"] = [str(tag).lstrip("#") for tag in hashtags]
     generated_text = json.dumps(result, ensure_ascii=False)
     if EMOJI_PATTERN.search(generated_text):
         if not sanitize_emoji:
             raise ValueError("Model response contained emoji")
-        for language in ("zh", "en"):
-            for field in ("title", "body"):
-                result[language][field] = EMOJI_PATTERN.sub(
-                    "", result[language][field]
-                )
+        result["intro"] = EMOJI_PATTERN.sub("", result["intro"]).strip()
         result["hashtags"] = [
             EMOJI_PATTERN.sub("", tag).strip()
             for tag in result["hashtags"]
@@ -729,37 +797,20 @@ def extract_contextual_kaomoji(text: str) -> list[str]:
     return matches
 
 
-def validate_contextual_kaomoji(content: dict[str, Any], minimum: int = 2) -> None:
-    for language in ("zh", "en"):
-        matches = extract_contextual_kaomoji(content[language]["body"])
-        if len(matches) < minimum or len(set(matches)) < minimum:
-            raise ValueError(
-                f"{language} body needs at least {minimum} varied contextual "
-                f"kaomoji; found {len(matches)} ({len(set(matches))} unique)"
-            )
-
-
-def build_kaomoji_repair_prompt():
+def build_content_repair_prompt():
     from langchain_core.prompts import ChatPromptTemplate
 
     return ChatPromptTemplate.from_messages(
         [
             (
                 "system",
-                """You are editing one bilingual social post written by 波波 Bo.
-Return strict JSON with exactly `zh`, `en`, and `hashtags`. Preserve every fact,
-event, date, time, price, venue, language, and overall meaning from the draft.
-You may remove individual event URLs to meet the channel contract, but do not add
-or remove an event. Do not add a signature or Unicode emoji.
-
-Repair the format and conversational voice. Mention only the 2-3 strongest
-activities and remove individual event URLs. Keep the Chinese title and body
-together under 330 characters and the English title and body together under 380
-characters. Use at most three hashtags. Each language body must contain 2-3
-different kaomoji naturally inside sentences at genuine emotional turns. They
-must not be standalone lines, paragraph prefixes, or titles. Vary their shapes;
-examples of the range include 〔•̀ᴗ•́〕و, (≧▽≦)ノ, and (((o(*ﾟ▽ﾟ*)o))). Keep
-natural Taiwan Traditional Chinese in `zh` and natural English in `en`.""",
+                """You are repairing a short diary-style opening written by 波波 Bo.
+Return strict JSON with exactly `intro` and `hashtags`. Preserve all supported
+facts and the original meaning. `intro` must be one or two natural Taiwan
+Traditional Chinese sentences under 90 characters. Do not add an event list,
+title, URL, signature, Unicode emoji, kaomoji, English, weather fact, date, time,
+price, or venue that is not already supported by the draft. `hashtags` must be
+an array of at most two strings without leading # characters.""",
             ),
             ("human", "Repair this draft JSON:\n{draft_json}"),
         ]
@@ -767,7 +818,9 @@ natural Taiwan Traditional Chinese in `zh` and natural English in `en`.""",
 
 
 def generate_content(
-    events: list[dict[str, Any]], now: datetime
+    events: list[dict[str, Any]],
+    now: datetime,
+    weather: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     from langchain_openai import ChatOpenAI
 
@@ -776,8 +829,8 @@ def generate_content(
         {
             "date": now.strftime("%Y-%m-%d"),
             "day_name": now.strftime("%A"),
+            "weather_context": json.dumps(weather or {}, ensure_ascii=False),
             "events": format_events(events),
-            "website_url": WEBSITE_URL,
         }
     )
     responses = [response]
@@ -788,50 +841,11 @@ def generate_content(
         content = parse_model_json(response.content, sanitize_emoji=True)
     except (ValueError, json.JSONDecodeError) as error:
         LOGGER.warning("Retrying invalid social JSON/schema once: %s", error)
-        repaired = (build_kaomoji_repair_prompt() | model).invoke(
+        repaired = (build_content_repair_prompt() | model).invoke(
             {"draft_json": str(response.content)}
         )
         responses.append(repaired)
         content = parse_model_json(repaired.content, sanitize_emoji=True)
-        try:
-            validate_contextual_kaomoji(content)
-        except ValueError as validation_error:
-            contract_warnings.append("kaomoji_contract_unmet_after_repair")
-            LOGGER.warning(
-                "Publishing after one repair despite kaomoji contract: %s",
-                validation_error,
-            )
-    else:
-        try:
-            validate_contextual_kaomoji(content)
-        except ValueError as error:
-            LOGGER.warning("Retrying kaomoji contract once: %s", error)
-            repaired = (build_kaomoji_repair_prompt() | model).invoke(
-                {"draft_json": str(response.content)}
-            )
-            responses.append(repaired)
-            try:
-                repaired_content = parse_model_json(
-                    repaired.content, sanitize_emoji=True
-                )
-            except (ValueError, json.JSONDecodeError) as repair_error:
-                contract_warnings.append("kaomoji_repair_invalid_original_used")
-                LOGGER.warning(
-                    "Publishing original draft after invalid kaomoji repair: %s",
-                    repair_error,
-                )
-            else:
-                content = repaired_content
-                try:
-                    validate_contextual_kaomoji(content)
-                except ValueError as validation_error:
-                    contract_warnings.append(
-                        "kaomoji_contract_unmet_after_repair"
-                    )
-                    LOGGER.warning(
-                        "Publishing after one repair despite kaomoji contract: %s",
-                        validation_error,
-                    )
     stages = []
     for index, item in enumerate(responses, start=1):
         usage = getattr(item, "usage_metadata", None) or getattr(
@@ -839,7 +853,7 @@ def generate_content(
         ).get("token_usage", {})
         stages.append(
             {
-                "stage": "draft" if index == 1 else "format-or-kaomoji-repair",
+                "stage": "draft" if index == 1 else "format-repair",
                 "token_usage": usage or {},
             }
         )
@@ -853,7 +867,7 @@ def generate_content(
     }
     return content, {
         "model": OPENAI_MODEL,
-        "prompt_version": "bobo-social-story-v8-nonblocking-voice",
+        "prompt_version": "bobo-social-diary-list-v9-zh-only",
         "openai_call_count": len(responses),
         "retried": len(responses) > 1,
         "stages": stages,
@@ -881,53 +895,175 @@ def select_kaomoji(events: list[dict[str, Any]], now: datetime) -> str:
     return pool[(seed // 100) % len(pool)]
 
 
-def render_shared_text(
-    content: dict[str, Any], mood_kaomoji: str | None = None
+WEEKDAYS_ZH = (
+    "禮拜一",
+    "禮拜二",
+    "禮拜三",
+    "禮拜四",
+    "禮拜五",
+    "禮拜六",
+    "禮拜日",
+)
+
+
+def _truncate(value: Any, limit: int) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[: max(1, limit - 1)].rstrip()}…"
+
+
+def _time_of_day_zh(now: datetime) -> str:
+    hour = now.hour
+    if hour < 6:
+        period = "凌晨"
+    elif hour < 12:
+        period = "早上"
+    elif hour < 18:
+        period = "下午"
+    else:
+        period = "晚上"
+    display_hour = hour % 12 or 12
+    return f"{period} {display_hour}:{now.minute:02d}"
+
+
+def render_diary_header(
+    now: datetime, weather: dict[str, Any] | None = None
 ) -> str:
-    zh_text, en_text = render_language_texts(content, mood_kaomoji)
-    return f"{zh_text}\n\n—— English ——\n\n{en_text}"
-
-
-def render_language_texts(
-    content: dict[str, Any], mood_kaomoji: str | None = None
-) -> tuple[str, str]:
-    """Render complete Traditional Chinese and English editions separately."""
-    persona = load_persona()
-    hashtags = " ".join(
-        f"#{tag}" for tag in content["hashtags"][:3]
+    weather_text = "天氣資料更新中"
+    if weather:
+        weather_text = (
+            f"{weather['condition_zh']}，"
+            f"{weather['temp_low_c']}–{weather['temp_high_c']}°C"
+        )
+    return (
+        f"{now.month}/{now.day}/{now.year} {WEEKDAYS_ZH[now.weekday()]}｜"
+        f"Boston {_time_of_day_zh(now)}｜{weather_text}"
     )
-    title = content["zh"]["title"].strip()
-    if mood_kaomoji:
-        title = f"{title} {mood_kaomoji}"
-    zh_post = (
-        f"{title}\n\n"
-        f"{content['zh']['body'].strip()}\n\n"
-        f"完整活動：{WEBSITE_URL}\n\n"
-        f"{persona['signoff']}"
-    ).strip()
-    en_parts = [
-        content["en"]["title"].strip(),
-        content["en"]["body"].strip(),
-        f"Full activity list: {WEBSITE_URL}",
+
+
+def _event_day_label(event: dict[str, Any], now: datetime) -> str:
+    try:
+        event_date = datetime.strptime(str(event.get("date")), "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return "日期見活動頁面"
+    offset = (event_date - now.date()).days
+    return {0: "今天", 1: "明天", 2: "後天"}.get(
+        offset, f"{event_date.month}/{event_date.day}"
+    )
+
+
+def _event_time(value: Any) -> str:
+    text = re.sub(
+        r"\b(\d{1,2}:\d{2}):00\b", r"\1", str(value or "").strip()
+    )
+    return text or "時間見活動頁面"
+
+
+def render_event_bullet(
+    event: dict[str, Any], now: datetime, *, compact: bool = False
+) -> str:
+    parts = [
+        f"{_event_day_label(event, now)} {_truncate(_event_time(event.get('time')), 20)}",
+        _truncate(event.get("name") or "未命名活動", 40 if not compact else 32),
     ]
-    if hashtags:
-        en_parts.append(hashtags)
-    en_parts.append(persona["signoff"])
-    return zh_post, "\n\n".join(en_parts).strip()
+    if compact:
+        return f"• {'｜'.join(parts)}"
+    location = event.get("city") or event.get("location")
+    if location:
+        parts.append(_truncate(location, 16))
+    price = str(event.get("price") or "").strip()
+    if price and price.lower() not in {"unknown", "n/a", "價格見活動頁面"}:
+        parts.append(_truncate(price, 12))
+    return f"• {'｜'.join(parts)}"
+
+
+def render_threads_root(
+    content: dict[str, Any],
+    events: list[dict[str, Any]],
+    now: datetime,
+    weather: dict[str, Any] | None = None,
+    mood_kaomoji: str | None = None,
+) -> str:
+    persona = load_persona()
+    intro = content["intro"].strip()
+    if mood_kaomoji:
+        intro = f"{intro} {mood_kaomoji}"
+    hashtags = " ".join(f"#{tag}" for tag in content.get("hashtags", [])[:2])
+
+    def build_root(
+        intro_text: str, *, compact_events: bool, include_hashtags: bool
+    ) -> str:
+        event_lines = "\n".join(
+            render_event_bullet(event, now, compact=compact_events)
+            for event in events
+        )
+        sections = [
+            render_diary_header(now, weather),
+            intro_text,
+            f"今天值得注意的活動在這裡：\n\n{event_lines}",
+            "活動連結在第一則留言。",
+        ]
+        if include_hashtags and hashtags:
+            sections.append(hashtags)
+        sections.append(persona["signoff"])
+        return "\n\n".join(sections).strip()
+
+    root = build_root(intro, compact_events=False, include_hashtags=True)
+    if len(root) > THREADS_MAX_POST_LENGTH:
+        root = build_root(
+            _truncate(intro, 64), compact_events=True, include_hashtags=False
+        )
+    if len(root) > THREADS_MAX_POST_LENGTH:
+        raise ValueError(
+            f"Rendered Threads root exceeds {THREADS_MAX_POST_LENGTH} characters"
+        )
+    return root
+
+
+def render_event_links(events: list[dict[str, Any]]) -> str:
+    entries = []
+    for index, event in enumerate(events, start=1):
+        link = str(event.get("link") or "").strip()
+        if not link:
+            continue
+        entries.append(f"{index}. {_truncate(event.get('name'), 58)}\n{link}")
+    if not entries:
+        return f"完整活動清單：\n{WEBSITE_URL}"
+    return "活動連結：\n\n" + "\n\n".join(entries)
 
 
 def render_threads_posts(
-    content: dict[str, Any], mood_kaomoji: str | None = None
+    content: dict[str, Any],
+    events: list[dict[str, Any]],
+    now: datetime,
+    weather: dict[str, Any] | None = None,
+    mood_kaomoji: str | None = None,
 ) -> list[str]:
-    """Split each language independently only when Threads requires it."""
-    zh_text, en_text = render_language_texts(content, mood_kaomoji)
-    return split_threads_text(zh_text) + split_threads_text(en_text)
+    """Render one Chinese root post followed by direct source-link replies."""
+    root = render_threads_root(content, events, now, weather, mood_kaomoji)
+    return [root] + split_threads_text(render_event_links(events))
+
+
+def render_shared_text(
+    content: dict[str, Any],
+    events: list[dict[str, Any]],
+    now: datetime,
+    weather: dict[str, Any] | None = None,
+    mood_kaomoji: str | None = None,
+) -> str:
+    posts = render_threads_posts(content, events, now, weather, mood_kaomoji)
+    return "\n\n—— 第一則留言 ——\n\n".join(posts)
 
 
 def validate_threads_posts(
-    content: dict[str, Any], mood_kaomoji: str | None = None
+    content: dict[str, Any],
+    events: list[dict[str, Any]],
+    now: datetime,
+    weather: dict[str, Any] | None = None,
+    mood_kaomoji: str | None = None,
 ) -> list[str]:
-    posts = render_threads_posts(content, mood_kaomoji)
+    posts = render_threads_posts(content, events, now, weather, mood_kaomoji)
     if not posts or any(
         not post or len(post) > THREADS_MAX_POST_LENGTH for post in posts
     ):
@@ -1270,6 +1406,7 @@ def store_campaign(
     ranked_events: list[dict[str, Any]] | None = None,
     ranking_metadata: dict[str, Any] | None = None,
     writing_metadata: dict[str, Any] | None = None,
+    weather: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     campaign_id = now.strftime("%Y-%m-%d")
     event_ids = [event["event_id"] for event in events]
@@ -1294,8 +1431,12 @@ def store_campaign(
         "campaign_id": campaign_id,
         "generated_at": now.isoformat(),
         "content": content,
-        "shared_text": render_shared_text(content, mood_kaomoji),
-        "thread_posts": render_threads_posts(content, mood_kaomoji),
+        "shared_text": render_shared_text(
+            content, events, now, weather, mood_kaomoji
+        ),
+        "thread_posts": render_threads_posts(
+            content, events, now, weather, mood_kaomoji
+        ),
         "selected_event_ids": event_ids,
         "ranking_policy": {
             "version": RANKING_PROMPT_VERSION,
@@ -1331,6 +1472,7 @@ def store_campaign(
             "version": load_persona()["version"],
             "mood_kaomoji": mood_kaomoji,
         },
+        "weather_context": weather or {"status": "unavailable"},
         "platforms": {
             "threads": threads_state or {"status": "ready"},
             "xiaohongshu": {"status": "manual_draft"},
@@ -1416,10 +1558,10 @@ def retry_failed_threads_publication(
             for post in thread_posts
         ):
             raise RuntimeError(
-                "Stored Threads posts do not satisfy the two-post contract"
+                "Stored Threads posts violate the platform length contract"
             )
     else:
-        # Campaigns created before the two-post contract only stored shared_text.
+        # Older campaigns stored only shared_text rather than rendered posts.
         thread_posts = split_threads_text(shared_text)
     chunk_count = len(thread_posts)
 
@@ -1507,6 +1649,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             )
 
     events_data = load_json("events/latest.json")
+    weather = load_daily_weather(now)
     history = load_json("social/history.json", default={})
     memory = load_bobo_memory()
     candidates = rank_social_events(events_data, history, now)
@@ -1517,8 +1660,10 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     if not selected:
         raise RuntimeError("AI ranking returned no selectable events")
     mood_kaomoji = select_kaomoji(selected, now)
-    content, writing_metadata = generate_content(selected, now)
-    thread_posts = validate_threads_posts(content, mood_kaomoji)
+    content, writing_metadata = generate_content(selected, now, weather)
+    thread_posts = validate_threads_posts(
+        content, selected, now, weather, mood_kaomoji
+    )
     if isinstance(event, dict) and event.get("dry_run"):
         return {
             "success": True,
@@ -1538,7 +1683,9 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 }
                 for rank, item in enumerate(ranked, start=1)
             ],
-            "shared_text": render_shared_text(content, mood_kaomoji),
+            "shared_text": render_shared_text(
+                content, selected, now, weather, mood_kaomoji
+            ),
             "thread_posts": thread_posts,
             "threads": {"status": "disabled_dry_run"},
         }
@@ -1551,10 +1698,13 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         ranked_events=ranked,
         ranking_metadata=ranking_metadata,
         writing_metadata=writing_metadata,
+        weather=weather,
     )
     threads_result: dict[str, Any] = {"status": "disabled"}
     if THREADS_PUBLISH_ENABLED:
-        shared_text = render_shared_text(content, mood_kaomoji)
+        shared_text = render_shared_text(
+            content, selected, now, weather, mood_kaomoji
+        )
         claim = {
             "campaign_id": now.strftime("%Y-%m-%d"),
             "status": "publishing",
@@ -1610,6 +1760,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
                 ranked_events=ranked,
                 ranking_metadata=ranking_metadata,
                 writing_metadata=writing_metadata,
+                weather=weather,
             )
             raise
         threads_result = {
@@ -1631,6 +1782,9 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
             threads_state=threads_result,
             mood_kaomoji=mood_kaomoji,
             ranked_events=ranked,
+            ranking_metadata=ranking_metadata,
+            writing_metadata=writing_metadata,
+            weather=weather,
         )
     result = {
         "success": True,

@@ -13,8 +13,10 @@ runtime guarantees when changing collectors, ranking, reports, or social copy:
   final rank for auditability.
 - Runtime models must not edit their own core persona or memory. Memory changes
   require evidence, a new version, an immutable archive, and human review.
-- Use natural Taiwan Traditional Chinese first and natural English second. Do
-  not use emoji; Bo's deterministic kaomoji is added by application code.
+- Daily social posts use natural Taiwan Traditional Chinese for Boston's
+  Taiwanese community; website reports remain Traditional Chinese followed by
+  natural English. Do not use emoji; Bo's deterministic kaomoji is added by
+  application code.
 - Never publish to Threads while `THREADS_PUBLISH_ENABLED=false`, and never turn
   it on without explicit authorization.
 

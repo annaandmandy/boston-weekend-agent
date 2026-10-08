@@ -150,8 +150,7 @@ class DailySocialTests(unittest.TestCase):
         try:
             MODULE.store_campaign(
                 {
-                    "zh": {"title": "今日活動", "body": "今天的活動。"},
-                    "en": {"title": "Boston today", "body": "Today's events."},
+                    "intro": "今天有幾個值得出門的理由。",
                     "hashtags": ["Boston"],
                 },
                 ranked,
@@ -177,8 +176,8 @@ class DailySocialTests(unittest.TestCase):
         )
         self.assertEqual(campaign["openai_call_count"], 2)
         self.assertEqual(len(campaign["thread_posts"]), 2)
-        self.assertIn("完整活動：", campaign["thread_posts"][0])
-        self.assertIn("Full activity list:", campaign["thread_posts"][1])
+        self.assertIn("今天值得注意的活動在這裡", campaign["thread_posts"][0])
+        self.assertIn("完整活動清單", campaign["thread_posts"][1])
 
     def test_ai_ranking_clamps_dimension_overflow_and_records_warning(self):
         response = json.dumps(
@@ -251,102 +250,108 @@ class DailySocialTests(unittest.TestCase):
         selected = MODULE.select_social_events(data, {}, now)
         self.assertEqual([event["event_id"] for event in selected], ["available"])
 
-    def test_renders_one_identical_shared_post(self):
+    def test_renders_chinese_diary_root_and_direct_link_reply(self):
+        now = datetime(2026, 9, 18, 7, tzinfo=ZoneInfo("America/New_York"))
         content = {
-            "zh": {
-                "title": "Boston 今日活動",
-                "body": "今天可以去公園聽音樂。",
-            },
-            "en": {
-                "title": "What's on in Boston today",
-                "body": "Listen to live music in the park today.",
-            },
-            "hashtags": ["Boston", "波士頓生活"],
+            "intro": "早上有點涼，出門記得帶件外套。",
+            "hashtags": ["Boston", "波士頓生活", "unused"],
         }
-        rendered = MODULE.render_shared_text(content)
-        self.assertIn("Boston 今日活動", rendered)
-        self.assertLess(
-            rendered.index("Boston 今日活動"),
-            rendered.index("What's on in Boston today"),
-        )
-        self.assertIn("—— English ——", rendered)
-        self.assertIn("#Boston #波士頓生活", rendered)
-        self.assertIn("— 波波 Bo ⌖ˎˊ˗ 〔•ᴗ•〕ゞ", rendered)
+        events = [
+            {
+                "event_id": "event-1",
+                "name": "公園音樂會",
+                "date": "2026-09-18",
+                "time": "19:00:00",
+                "city": "Boston",
+                "price": "Free",
+                "link": "https://example.com/music",
+            },
+            {
+                "event_id": "event-2",
+                "name": "週末市集",
+                "date": "2026-09-19",
+                "time": "10:00:00",
+                "city": "Cambridge",
+                "link": "https://example.com/market",
+            },
+        ]
+        weather = {
+            "condition_zh": "晴",
+            "temp_low_c": 10,
+            "temp_high_c": 20,
+        }
 
-    def test_renders_exactly_one_chinese_post_and_one_english_reply(self):
-        content = {
-            "zh": {"title": "今天去哪", "body": "先去散步，再看一場表演。"},
-            "en": {"title": "Boston today", "body": "Take a walk, then see a show."},
-            "hashtags": ["Boston", "Weekend", "GreaterBoston", "unused"],
-        }
-        posts = MODULE.validate_threads_posts(content, "⌖ˎˊ˗ 〔✦ᴗ✦〕ノ")
+        posts = MODULE.validate_threads_posts(
+            content, events, now, weather, "⌖ˎˊ˗ 〔✦ᴗ✦〕ノ"
+        )
 
         self.assertEqual(len(posts), 2)
-        self.assertIn("今天去哪", posts[0])
-        self.assertNotIn("Boston today", posts[0])
-        self.assertIn("Boston today", posts[1])
-        self.assertNotIn("今天去哪", posts[1])
-        self.assertIn(MODULE.WEBSITE_URL, posts[0])
-        self.assertIn(MODULE.WEBSITE_URL, posts[1])
-        self.assertIn("#Boston #Weekend #GreaterBoston", posts[1])
-        self.assertNotIn("#unused", posts[1])
+        self.assertIn("9/18/2026 禮拜五｜Boston 早上 7:00｜晴，10–20°C", posts[0])
+        self.assertIn("• 今天 19:00｜公園音樂會｜Boston｜Free", posts[0])
+        self.assertIn("• 明天 10:00｜週末市集｜Cambridge", posts[0])
+        self.assertIn("活動連結在第一則留言", posts[0])
+        self.assertNotIn("English", posts[0])
+        self.assertIn("https://example.com/music", posts[1])
+        self.assertIn("https://example.com/market", posts[1])
         self.assertTrue(all(len(post) <= 500 for post in posts))
 
-    def test_oversize_language_splits_without_mixing_languages(self):
-        content = {
-            "zh": {"title": "今天去哪", "body": "很長" * 250},
-            "en": {"title": "Boston today", "body": "Long copy. " * 100},
-            "hashtags": [],
+    def test_diary_header_falls_back_when_weather_is_unavailable(self):
+        now = datetime(2026, 9, 18, 7, 5, tzinfo=ZoneInfo("America/New_York"))
+        self.assertEqual(
+            MODULE.render_diary_header(now),
+            "9/18/2026 禮拜五｜Boston 早上 7:05｜天氣資料更新中",
+        )
+
+    def test_loads_only_fresh_weather_for_today(self):
+        now = datetime(2026, 9, 18, 7, tzinfo=ZoneInfo("America/New_York"))
+        payload = {
+            "timestamp": "2026-09-17T11:15:00",
+            "weather": {
+                "Boston,MA,US": [
+                    {
+                        "time": "2026-09-18 09:00:00",
+                        "temp": 10.2,
+                        "condition": "Clear Sky",
+                        "pop": 0,
+                    },
+                    {
+                        "time": "2026-09-18 18:00:00",
+                        "temp": 20.4,
+                        "condition": "Few Clouds",
+                        "pop": 5,
+                    },
+                ]
+            },
         }
+        with patch.object(MODULE, "load_json", return_value=payload):
+            weather = MODULE.load_daily_weather(now)
+        self.assertEqual(weather["condition_zh"], "多雲")
+        self.assertEqual(weather["temp_low_c"], 10)
+        self.assertEqual(weather["temp_high_c"], 20)
 
-        zh_text, en_text = MODULE.render_language_texts(content)
-        posts = MODULE.validate_threads_posts(content)
+        payload["timestamp"] = "2026-09-16T00:00:00"
+        with patch.object(MODULE, "load_json", return_value=payload):
+            self.assertIsNone(MODULE.load_daily_weather(now))
 
-        expected_zh = MODULE.split_threads_text(zh_text)
-        expected_en = MODULE.split_threads_text(en_text)
-        self.assertEqual(posts, expected_zh + expected_en)
-        self.assertGreater(len(posts), 2)
-        self.assertTrue(all(0 < len(post) <= 500 for post in posts))
-        self.assertTrue(all("Boston today" not in post for post in expected_zh))
-        self.assertTrue(all("今天去哪" not in post for post in expected_en))
-
-    def test_parses_structured_bilingual_content(self):
+    def test_parses_structured_chinese_intro(self):
         content = MODULE.parse_model_json(
             """{
-                "zh": {"title": "今日活動", "body": "中文內容"},
-                "en": {"title": "Today's events", "body": "English copy"},
+                "intro": "今天適合出門走走。",
                 "hashtags": ["#Boston", "週末去哪"]
             }"""
         )
-        self.assertEqual(content["zh"]["body"], "中文內容")
-        self.assertEqual(content["en"]["body"], "English copy")
+        self.assertEqual(content["intro"], "今天適合出門走走。")
         self.assertEqual(content["hashtags"], ["Boston", "週末去哪"])
-
-    def test_parser_preserves_raw_kaomoji_backslash_as_valid_json(self):
-        content = MODULE.parse_model_json(
-            r'''{
-                "zh": {"title": "今日活動", "body": "出門 \(≧▽≦)/"},
-                "en": {"title": "Today", "body": "Let's go \(≧▽≦)/"},
-                "hashtags": ["Boston"]
-            }'''
-        )
-        self.assertIn(r"\(≧▽≦)/", content["zh"]["body"])
 
     def test_prompt_requires_traditional_chinese(self):
         prompt_text = str(MODULE.build_prompt())
         self.assertIn("Traditional Chinese", prompt_text)
-        self.assertIn("Never use Simplified Chinese", prompt_text)
-        self.assertIn("instead of a numbered or repetitive list", prompt_text)
-        self.assertIn("conversational tiny story", prompt_text)
-        self.assertIn("330 Traditional Chinese characters", prompt_text)
-        self.assertIn("380 characters, not words", prompt_text)
-        self.assertIn("2-3 strongest activities", prompt_text)
-        self.assertIn("do not include individual event URLs", prompt_text)
-        self.assertIn("2-3 varied kaomoji", prompt_text)
-        self.assertIn("emotional punctuation", prompt_text)
-        self.assertIn("fixed top expression", prompt_text.replace("\n", " "))
-        self.assertIn("optional flavor, not a quota", prompt_text.replace("\n", " "))
-        self.assertIn("Taiwan-style zhuyin", prompt_text)
+        self.assertIn("never Simplified Chinese", prompt_text)
+        self.assertIn("diary-style opening", prompt_text)
+        self.assertIn("under 90 Traditional Chinese characters", prompt_text)
+        self.assertIn("Do not list or summarize the events", prompt_text)
+        self.assertIn("verified weather context", prompt_text)
+        self.assertIn("Do not include a title, URL, hashtag", prompt_text)
 
     def test_ranking_prompt_uses_identity_memory_and_no_distance_quota(self):
         prompt = MODULE.build_ranking_prompt()
@@ -368,8 +373,7 @@ class DailySocialTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "contained emoji"):
             MODULE.parse_model_json(
                 """{
-                    "zh": {"title": "今日活動", "body": "出門走走☀️"},
-                    "en": {"title": "Today", "body": "Go outside"},
+                    "intro": "出門走走☀️",
                     "hashtags": ["Boston"]
                 }"""
             )
@@ -380,14 +384,7 @@ class DailySocialTests(unittest.TestCase):
                 MagicMock(
                     content=json.dumps(
                         {
-                            "zh": {
-                                "title": "今日",
-                                "body": "先出門 〔•̀ᴗ•́〕و，再散步 (≧▽≦)☀️。",
-                            },
-                            "en": {
-                                "title": "Today",
-                                "body": "Head out 〔´ᴗ`〕～ then wander (•̀ᴗ•́)✨.",
-                            },
+                            "intro": "今天先出門走走☀️。",
                             "hashtags": ["Boston"],
                         },
                         ensure_ascii=False,
@@ -407,7 +404,7 @@ class DailySocialTests(unittest.TestCase):
         with patch("langchain_openai.ChatOpenAI"), patch.object(
             MODULE, "get_openai_api_key", return_value="test-key"
         ), patch.object(MODULE, "build_prompt", return_value=FakePrompt()), patch.object(
-            MODULE, "build_kaomoji_repair_prompt", return_value=FakePrompt()
+            MODULE, "build_content_repair_prompt", return_value=FakePrompt()
         ):
             content, metadata = MODULE.generate_content(
                 [], datetime(2026, 9, 18, 7, tzinfo=ZoneInfo("America/New_York"))
@@ -420,14 +417,13 @@ class DailySocialTests(unittest.TestCase):
         self.assertEqual(metadata["token_usage"]["total_tokens"], 10)
         self.assertIn("emoji_removed_from_draft", metadata["contract_warnings"])
 
-    def test_generate_content_publishes_after_one_unsuccessful_kaomoji_repair(self):
+    def test_generate_content_repairs_invalid_diary_schema_once(self):
         responses = iter(
             [
                 MagicMock(
                     content=json.dumps(
                         {
-                            "zh": {"title": "今日", "body": "先出門走走。"},
-                            "en": {"title": "Today", "body": "Go outside."},
+                            "body": "先出門走走。",
                             "hashtags": ["Boston"],
                         },
                         ensure_ascii=False,
@@ -437,8 +433,7 @@ class DailySocialTests(unittest.TestCase):
                 MagicMock(
                     content=json.dumps(
                         {
-                            "zh": {"title": "今日", "body": "先出門 〔•ᴗ•〕。"},
-                            "en": {"title": "Today", "body": "Go out (•ᴗ•)."},
+                            "intro": "今天先出門走走。",
                             "hashtags": ["Boston"],
                         },
                         ensure_ascii=False,
@@ -458,68 +453,15 @@ class DailySocialTests(unittest.TestCase):
         with patch("langchain_openai.ChatOpenAI"), patch.object(
             MODULE, "get_openai_api_key", return_value="test-key"
         ), patch.object(MODULE, "build_prompt", return_value=FakePrompt()), patch.object(
-            MODULE, "build_kaomoji_repair_prompt", return_value=FakePrompt()
+            MODULE, "build_content_repair_prompt", return_value=FakePrompt()
         ):
             content, metadata = MODULE.generate_content(
                 [], datetime(2026, 9, 18, 7, tzinfo=ZoneInfo("America/New_York"))
             )
 
-        self.assertEqual(content["zh"]["body"], "先出門 〔•ᴗ•〕。")
+        self.assertEqual(content["intro"], "今天先出門走走。")
         self.assertEqual(metadata["openai_call_count"], 2)
-        self.assertIn(
-            "kaomoji_contract_unmet_after_repair",
-            metadata["contract_warnings"],
-        )
-
-    def test_generate_content_keeps_original_when_kaomoji_repair_is_invalid(self):
-        original = {
-            "zh": {"title": "今日", "body": "先出門走走。"},
-            "en": {"title": "Today", "body": "Go outside."},
-            "hashtags": ["Boston"],
-        }
-        responses = iter(
-            [
-                MagicMock(
-                    content=json.dumps(original, ensure_ascii=False),
-                    usage_metadata={"total_tokens": 10},
-                ),
-                MagicMock(content="{broken", usage_metadata={"total_tokens": 4}),
-            ]
-        )
-
-        class FakePrompt:
-            def __or__(self, model):
-                return self
-
-            def invoke(self, values):
-                return next(responses)
-
-        with patch("langchain_openai.ChatOpenAI"), patch.object(
-            MODULE, "get_openai_api_key", return_value="test-key"
-        ), patch.object(MODULE, "build_prompt", return_value=FakePrompt()), patch.object(
-            MODULE, "build_kaomoji_repair_prompt", return_value=FakePrompt()
-        ):
-            content, metadata = MODULE.generate_content(
-                [], datetime(2026, 9, 18, 7, tzinfo=ZoneInfo("America/New_York"))
-            )
-
-        self.assertEqual(content, original)
-        self.assertEqual(metadata["openai_call_count"], 2)
-        self.assertIn(
-            "kaomoji_repair_invalid_original_used",
-            metadata["contract_warnings"],
-        )
-
-    def test_accepts_contextual_kaomoji_inside_both_language_bodies(self):
-        content = MODULE.parse_model_json(
-            """{
-                "zh": {"title": "今日活動", "body": "天氣很配合 〔•̀ᴗ•́〕و 可以出門。"},
-                "en": {"title": "Today's events", "body": "The weather cooperates 〔´ᴗ`〕～ so let's go."},
-                "hashtags": ["Boston"]
-            }"""
-        )
-        self.assertIn("〔•̀ᴗ•́〕و", content["zh"]["body"])
-        self.assertIn("〔´ᴗ`〕～", content["en"]["body"])
+        self.assertTrue(metadata["retried"])
 
     def test_detects_varied_contextual_kaomoji_without_counting_asides(self):
         text = (
@@ -530,20 +472,6 @@ class DailySocialTests(unittest.TestCase):
         matches = MODULE.extract_contextual_kaomoji(text)
         self.assertEqual(len(matches), 3)
         self.assertFalse(MODULE.extract_contextual_kaomoji("先散步（但記得帶外套）。"))
-
-    def test_contextual_kaomoji_contract_requires_two_varied_faces_per_language(self):
-        valid = {
-            "zh": {"title": "今日活動", "body": "出門 〔•̀ᴗ•́〕و，選擇困難 (≧▽≦)。"},
-            "en": {"title": "Today", "body": "Let's go 〔´ᴗ`〕～ or wander (•̀ᴗ•́)."},
-            "hashtags": ["Boston"],
-        }
-        MODULE.validate_contextual_kaomoji(valid)
-        invalid = {
-            **valid,
-            "en": {"title": "Today", "body": "Only a normal aside (bring a coat)."},
-        }
-        with self.assertRaisesRegex(ValueError, "en body needs at least 2"):
-            MODULE.validate_contextual_kaomoji(invalid)
 
     def test_kaomoji_is_deterministic_for_same_campaign(self):
         now = datetime(2026, 9, 17, 7, tzinfo=ZoneInfo("America/New_York"))
@@ -560,15 +488,20 @@ class DailySocialTests(unittest.TestCase):
         self.assertTrue(first.startswith("⌖ˎˊ˗"))
 
     def test_render_adds_one_mood_face_and_fixed_signature(self):
-        content = {
-            "zh": {"title": "今晚去哪裡", "body": "散步看表演。"},
-            "en": {"title": "Tonight in Boston", "body": "Take a walk."},
-            "hashtags": ["Boston"],
-        }
+        now = datetime(2026, 9, 18, 7, tzinfo=ZoneInfo("America/New_York"))
+        content = {"intro": "今天來看看活動。", "hashtags": ["Boston"]}
+        events = [
+            {
+                "event_id": "music",
+                "name": "音樂會",
+                "date": "2026-09-18",
+                "link": "https://example.com/music",
+            }
+        ]
         mood = "⌖ˎˊ˗ 〔✦ᴗ✦〕ノ"
-        rendered = MODULE.render_shared_text(content, mood)
+        rendered = MODULE.render_shared_text(content, events, now, None, mood)
         self.assertEqual(rendered.count(mood), 1)
-        self.assertTrue(rendered.endswith("— 波波 Bo ⌖ˎˊ˗ 〔•ᴗ•〕ゞ"))
+        self.assertIn("— 波波 Bo ⌖ˎˊ˗ 〔•ᴗ•〕ゞ", rendered)
 
     def test_threads_introduction_is_bilingual_single_post_with_report_link(self):
         text = MODULE.render_threads_introduction()
@@ -670,8 +603,7 @@ class DailySocialTests(unittest.TestCase):
         try:
             keys = MODULE.store_campaign(
                 {
-                    "zh": {"title": "Boston 今日活動", "body": "今天的活動。"},
-                    "en": {"title": "Boston today", "body": "Today's events."},
+                    "intro": "今天來看看活動。",
                     "hashtags": ["Boston"],
                 },
                 [{"event_id": "event-1"}],
@@ -742,7 +674,7 @@ class DailySocialTests(unittest.TestCase):
                 ],
             ) as create:
                 result = MODULE.create_threads_container_with_retry(
-                    "user-1", "token", "English reply", "post-1"
+                    "user-1", "token", "活動連結", "post-1"
                 )
         finally:
             MODULE.THREADS_REPLY_SETTLE_SECONDS = original_delay
@@ -818,7 +750,7 @@ class DailySocialTests(unittest.TestCase):
             return_value={
                 "campaign_id": "2026-09-22",
                 "shared_text": shared_text,
-                "thread_posts": ["中文主文", "English reply"],
+                "thread_posts": ["中文主文", "活動連結"],
             },
         ), patch.object(
             MODULE, "write_publication_state", side_effect=lambda _, value: states.append(value)
@@ -836,7 +768,7 @@ class DailySocialTests(unittest.TestCase):
         self.assertEqual(result["threads_publish_status"], "published_retry")
         self.assertEqual(states[-1]["status"], "published")
         self.assertEqual(states[-1]["post_ids"], ["post-1", "post-2"])
-        self.assertEqual(publish.call_args.args[0], ["中文主文", "English reply"])
+        self.assertEqual(publish.call_args.args[0], ["中文主文", "活動連結"])
 
 
 if __name__ == "__main__":

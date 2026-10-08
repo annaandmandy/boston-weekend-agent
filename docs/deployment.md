@@ -137,7 +137,10 @@ Create an immutable, scan-on-push ECR repository named
 - `OPENAI_MODEL`: `gpt-5.6-luna`
 - `OPENAI_REASONING_EFFORT`: `none`
 - `SOCIAL_COOLDOWN_HOURS`: `48`
-- `MAX_SOCIAL_EVENTS`: `5`
+- `MAX_SOCIAL_EVENTS`: `3`
+- `WEATHER_KEY`: `weather/latest.json`
+- `WEATHER_CITY`: `Boston,MA,US`
+- `WEATHER_MAX_AGE_HOURS`: `26`
 - `WEBSITE_URL`: `https://www.hsiangyuhuang.com/weekend_report`
 - `THREADS_SECRET_ID`: the ARN for `boston-weekend-agent/threads`
 - `THREADS_PUBLISH_ENABLED`: `false` during the first deployment
@@ -176,16 +179,17 @@ The Meta app and the authorization grant must include all three permissions:
 - `threads_content_publish`
 - `threads_manage_replies`
 
-The last permission is required because each daily bilingual edition starts with
-one Traditional Chinese root post and continues with English replies. The two
-languages are separated before either is split independently at Threads' hard
-500-character limit. Length alone never triggers another LLM writing call. Re-run
+The last permission is required because each daily edition starts with one
+Traditional Chinese diary-style root post and continues with one or more direct
+event-link replies. Link replies split deterministically only when Threads' hard
+500-character limit requires it. Length alone never triggers another LLM writing call. Re-run
 the OAuth flow whenever the permission set changes; adding a permission in the
 Meta dashboard does not retroactively add it to an existing access token.
 
 After the Lambda image and IAM policy are updated, keep
 `THREADS_PUBLISH_ENABLED=false` for one direct invocation and inspect
-`social/latest.txt`. Confirm that the Chinese section uses Traditional Chinese.
+`social/latest.txt`. Confirm that the diary header, Traditional Chinese event
+bullets, and direct event-link reply are correct.
 When the copy is acceptable, change the flag to `true` and
 invoke once. A successful run creates
 `social/publications/threads/YYYY-MM-DD.json` with status `published` and the

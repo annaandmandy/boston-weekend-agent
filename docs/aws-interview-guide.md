@@ -15,9 +15,10 @@ command that will be committed to Git.
 
 Boston Weekend Agent is an event-driven, serverless content system. A scheduled
 collector Lambda normalizes Greater Boston events into versioned S3 snapshots.
-A daily social Lambda reads that snapshot, asks Bo's LLM ranking and writing
-layers for bilingual copy, stores an audit record in S3, and publishes to
-Threads with an idempotency guard. A separate Standard Step Functions workflow
+A daily social Lambda reads event and weather snapshots, asks Bo's LLM ranking
+layer to select events and writing layer for a short zh-TW diary opening, then
+deterministically adds event bullets and source-link replies. It stores an audit
+record in S3 and publishes to Threads with an idempotency guard. A separate Standard Step Functions workflow
 orchestrates weather, travel context, sentiment, and the report Lambda; its
 output is delivered to the website through CloudFront. The website's anonymous
 Like feature uses API Gateway, a small validation Lambda, and DynamoDB

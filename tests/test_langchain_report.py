@@ -60,17 +60,26 @@ class LangChainReportTests(unittest.TestCase):
         )
         self.assertIn("`zh` and `en`", rendered)
 
-    def test_daily_and_weekend_persona_files_match(self):
+    def test_daily_and_weekend_personas_share_bobo_identity(self):
         daily_persona_path = (
             pathlib.Path(__file__).parents[1]
             / "services"
             / "daily-social"
             / "persona.json"
         )
-        self.assertEqual(
-            __import__("json").loads(daily_persona_path.read_text()),
-            MODULE.load_persona(),
-        )
+        daily = __import__("json").loads(daily_persona_path.read_text())
+        weekend = MODULE.load_persona()
+        for field in (
+            "id",
+            "display_name",
+            "role",
+            "signature",
+            "signoff",
+            "common_expressions",
+            "themed_expressions",
+        ):
+            self.assertEqual(daily[field], weekend[field])
+        self.assertNotEqual(daily["content_style"], weekend["content_style"])
 
     def test_daily_and_weekend_default_memory_files_match(self):
         daily_memory_path = (

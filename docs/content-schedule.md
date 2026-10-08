@@ -6,7 +6,7 @@ shift the local publishing time.
 | Local time | Workflow | Output |
 | --- | --- | --- |
 | Daily 06:00 | Event collector | Today through the next ten days in `events/latest.json` |
-| Daily 07:00 | Daily social generator | One shared bilingual Threads/Xiaohongshu draft in `social/latest.json` and `.txt` |
+| Daily 07:00 | Daily social generator | One zh-TW diary-style Threads/Xiaohongshu draft plus event-link replies in `social/latest.json` and `.txt` |
 | Daily 07:15 | Rolling report workflow | Fresh website letter, weather, and ten-day Activities list |
 
 The website continues to read `reports/weekend_summary.txt`. Each report is also
@@ -44,10 +44,14 @@ explicit source status.
 
 ## Social cooldown
 
-The social generator selects events occurring today through two days ahead and
-excludes anything selected during the previous 48 hours. It produces Chinese
-copy first and matching English copy second. The bilingual text, hashtags,
-links, and event selection are shared by both platforms.
+The social generator selects at most three events occurring today through two
+days ahead and excludes anything selected during the previous 48 hours. It
+reads `weather/latest.json` only when the snapshot is at most 26 hours old and
+contains a Boston forecast for the current local date. The root post starts with
+a deterministic date, weekday, local time, and weather header, followed by a
+short model-written zh-TW opening and deterministic event bullets. Direct event
+URLs are placed in replies. English social copy is paused; the website report
+remains bilingual.
 
 Until the platform connections are completed:
 
